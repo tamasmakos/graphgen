@@ -1,0 +1,14 @@
+requires
+.venv
+__pycache__
+lib
+.gitignore
+input
+.pytest_cache
+.gemini*.log
+node_modules/
+dist/
+.geminiignore
+.gemini
+output
+.env

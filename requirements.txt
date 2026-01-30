@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+falkordb
+python-dotenv
+requests
+pydantic
