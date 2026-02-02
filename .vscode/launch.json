@@ -1,13 +1,12 @@
 {
     "version": "0.2.0",
     "configurations": [
-        
         {
             "name": "GraphGen: Pipeline",
             "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/services/graphgen/src/main.py",
-            "cwd": "${workspaceFolder}/services/graphgen",
+            "program": "${workspaceFolder}/main.py",
+            "cwd": "${workspaceFolder}",
             "envFile": "${workspaceFolder}/.env",
             "console": "integratedTerminal"
         },

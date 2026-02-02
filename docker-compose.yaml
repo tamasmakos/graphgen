@@ -1,0 +1,115 @@
+services:
+  # --- Infrastructure ---
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "6381:6379" # Internal & Local access
+      - "3002:3000" # Dashboard
+    volumes:
+      - falkordb_data:/data
+    restart: always
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgvector:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5436:5432"
+    environment:
+      - POSTGRES_DB=graphknows
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse-server:
+    image: langfuse/langfuse:2
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      - NEXTAUTH_SECRET=mysecret
+      - SALT=mysalt
+      - NEXTAUTH_URL=http://localhost:3000
+      - TELEMETRY_ENABLED=false
+    restart: always
+
+  langfuse-db:
+    image: postgres:16
+    restart: always
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_DB=langfuse
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U langfuse -d langfuse" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - langfuse_data:/var/lib/postgresql/data
+
+  neo4j:
+    image: neo4j:5.26.20-ubi10
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/password
+    volumes:
+      - neo4j_data:/data
+    restart: always
+
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    command: tail -f /dev/null
+    depends_on:
+      - falkordb
+      - pgvector
+      - neo4j
+
+  # --- Application Services ---
+  graphgen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - FALKORDB_HOST=falkordb
+      - POSTGRES_HOST=pgvector
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PYTHONPATH=/app
+    ports:
+      - "8020:8000" # Host:Container
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./src:/app/src
+    depends_on:
+      falkordb:
+        condition: service_healthy
+      pgvector:
+        condition: service_healthy
+
+volumes:
+  falkordb_data:
+  pgvector_data:
+  langfuse_data:
+  neo4j_data:
