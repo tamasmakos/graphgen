@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns="http://jena.hpl.hp.com/schemas/2003/03/ont-manager#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xml:base="http://jena.hpl.hp.com/schemas/2003/03/ont-manager">
+
+	<!-- ### everything else ### -->
+
+	<DocumentManagerPolicy>
+		<cacheModels rdf:datatype="http://www.w3.org/2001/XMLSchema#boolean">true</cacheModels>
+		<processImports rdf:datatype="http://www.w3.org/2001/XMLSchema#boolean">true</processImports>
+	</DocumentManagerPolicy>
+	<OntologySpec>
+		<altURL rdf:resource="file:./cdm.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://publications.europa.eu/ontology/cdm"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./import.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://publications.europa.eu/ontology/cdm/import"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./cdm_annotationproperties.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://publications.europa.eu/ontology/annotation"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./cdm_datatypes.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://publications.europa.eu/ontology/datatype"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./cdm_indexation.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://publications.europa.eu/ontology/cdm/indexation"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./euvoc.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://publications.europa.eu/ontology/euvoc"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./skos-xl.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://www.w3.org/2008/05/skos-xl"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./skos.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://www.w3.org/2004/02/skos/core"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./vcard.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://www.w3.org/2006/vcard/ns"/>
+	</OntologySpec>
+	<OntologySpec>
+		<altURL rdf:resource="file:./org.rdf"/>
+		<language rdf:resource="http://www.w3.org/2002/07/owl"/>
+		<prefix rdf:datatype="http://www.w3.org/2001/XMLSchema#string">owl</prefix>
+		<publicURI rdf:resource="http://www.w3.org/ns/org#"/>
+	</OntologySpec>
+</rdf:RDF>

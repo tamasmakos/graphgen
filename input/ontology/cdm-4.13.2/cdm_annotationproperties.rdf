@@ -1,0 +1,370 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:dct="http://purl.org/dc/terms/" xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:admin="http://publications.europa.eu/ontology/cdm/admin#"
+         xml:base="http://publications.europa.eu/ontology/annotation">
+
+	<!-- ### Ontologies ### -->
+
+	<owl:Ontology rdf:about="http://publications.europa.eu/ontology/annotation">
+      <owl:versionInfo>4.13.2</owl:versionInfo>
+   </owl:Ontology>
+
+	  <!-- ### Annotation properties ### -->
+
+	<owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#actor">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">An institutional actor (e.g. author) as reference to AT corporate-body.</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Initially introduced for the subsubheading feature of OJ act by act in order to record the list of authors as in the moment of ingestion of the authentic OJ act document into CELLAR.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#agent_role">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">specify the role of agents, e.g., ADDRESSEE, EDITOR, ...</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#alinea">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">article part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#annex">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">annex part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#appendix">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">appendix part of the structure of an act (subdivision CAT)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#approximation">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Comment on additional information not precisely known</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">comment that indicates for the human reader some additional information that may be available on a date that is not precisely known (e.g. "this publication was printed in the 1960s")</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#article">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">article part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#build_info">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Build information</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">This is a structured record containing provenance information about the systems/tools preparing the ingestion of metadata into CELLAR.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#changed_to_identifier">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">A wrongly built identifier has been changed to another one that is given here</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#chapter">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">chapter part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#citation">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">citation part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#comment_on_date">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Comment on the date (e.g. for IF_COMMENT, LB_DN_COMMENT)</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">In our legacy data this annotation used to point to mixed content containing links fd_325 (deprecated). We have fully mapped them to the NAL place</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#comment_on_legal_basis">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Comment on the legal basis (e.g. for LB_DN_COMMENTPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#comment_on_url">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Comment on URL</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">A comment giving circumstancial information about the annotated URL</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#context">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">the context in which a statement holds true, e.g. for the implementation of certain directives into national law</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#context_decision">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">the context of a decision in case law, corresponds to caselawext:context_decision in IMMC</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#country">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The country of agent, or ....</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#date">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Date linked to the property in question, e.g. date of referral</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#date_legal_effect_electronic_edition">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Date of legal effect for electronic edition</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">When an Official Journal electronic edition could not be produced in time for the announced publication date, the paper version of that edition is declared having legal value. However, WHEN the electronic version becomes available, the legal value is shifted from the paper edition to the electronic edition. This property holds the date on which the electronic edition became the legally binding edition.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#designation">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Title designation</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Designation of the title</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#edition">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Edition</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indication of an edition version of a document or a standard</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#eli_source">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">ELI of the source work of this relationship. Can be either the ELI of a complete act or the ELI of a subdivision</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#eli_target">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">ELI of the target work of this relationship. Can be either the ELI of a complete act or the ELI of a subdivision</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#end_of_validity">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">End of validity</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#error_message">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Error message related to the quality issue</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#famille">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">It is at present unknown what the semantics of the contents of this field are</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#fragment_cited_target">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precise target for citations (Procat type CI)</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precise target for citations especially of Procat type CI, see in admin:cdata_comment</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#fragment_citing_source">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precise target for citations (Procat type CJ)</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precise target for citations especially of Procat type CJ, see in admin:cdata_comment</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#hyphen">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">hypen part of the structure of an act (subdivision CAT)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#identifier-other">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Identifier from other source</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">An additional identifier, not assigned by OP.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#ignore_identifier">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The given identifier should be ignored, e.g. because it is erroneous</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#impact">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indicates the type of impact a modification or correction has on the structure or the text of a legal resource.</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#in_committee">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">An agent is part of a parliamentary committee</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#indent">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">indent part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#information-additional">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Additional information</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Additional information about the annotated property.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#issn">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">ISSN number</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The ISSN number of a series if no link could be established.</rdfs:comment>
+      <dct:created rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime">2022-09-30T09:30:22</dct:created>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#jurisdiction">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Information about jurisdiction (coded, resource URI for AT corporate-body)</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">based on MARC21 field 540 $b</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#jurisdiction_text">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Information about jurisdiction in textual form</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">based on MARC21 field 540 $b</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#language">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Language of transliterated text</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The language of a transliterated text, representing the language as @xml:lang on the non-transliterated text.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#language_list">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">List of language(s) concerned by this link</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">List of language(s) concerned by this link, as: DA, ET, RO, SK</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#location">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Location</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Reference to a location like from AT place or the name of a place</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#location_text">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Location text</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Reference to a location like from AT place or the name of a place with annotational features for cataloguing</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#mapping_issue">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Captures incomplete mapping knowledge</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#materials">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Information about accompanying material</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">based on MARC21 field 540 $3</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#new_reference">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indicates the new numbering of a subdivision in case of a modification causing a renumbering.</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#old_value">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Original (wrong) value</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#orcid-uri">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">ORCID URI</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">URI to identify a person in the orcid system (orcid identifier)</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#order">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Order of the annotation in a list</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precise the place of the item in the rdflist which the annotation relates to)</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#organization-type">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Type of organisation representing the annotated entity (which is e.g. country, organisation, corporate-body, ...)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#paragraph">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">paragraph part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#part">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">"part" part of the structure of an act (currently not in Procat)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#part_of_testset">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indicate if a given work or dossier is part of a testset. The name of the testset should be given as the textual content of this property, e.g. &lt;annotation:part_of_testset&gt;non-regression&lt;/annotation:part_of_testset&gt;</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#phrase">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">phrase part of the structure of an act (currently not in Procat)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#point">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">point part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#position">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indicates the precise location (in relation to a subdivision) for applying the modification.</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#preamble">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">preamble part of the structure of an act (currently not in Procat)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#prefix">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Prefix part of a reference (in case of decomposition)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#production_sequence">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Contains the number of production sequence in which the consolidation was done</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#protocol">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">protocol part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#provenance">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Provenance</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Describes the provenance of a (meta)data item, i.e. the system or mechanism that created or handled the item, e.g. "AI generated", or "SETA", or "metadata extractor".</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#publication_reference">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precise publication reference</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precise publication reference field (SO in procat). Is in full text, needed in IDOL as a single field because IDOL is not able to derive information from several fields (cf. https://webgate.ec.europa.eu/publications/jira/browse/METACONV-7)</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#quality_issue">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Description of a quality issue with a given statement</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#read_only">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">For any digital object carrying this annotation the update should be rejected</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#recital">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">recital part of the structure of an act (currently not in Procat)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#reference_eli">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Hold a complete ELI URI, including subdivisions, e.g. as reference to a legal basis.</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#reference_oj-act_domain_position">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">reference oj act domain position</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The annotation property defines the position of the domain indicator (cdm:resource_legal_domain_reference_act-oj) of an OJ act reference (cdm:resource_legal_reference_act-oj). The list of position(s): before, after, where before is value by defaulte</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#reference_to_modified_location">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indication of the location which has been changed</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Futher indication of the location which has been changed, see in admin:cdata_comment</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#reference_to_modifying_location">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indication of the location which has been changed</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Futher indication of the location which has been changed, see in admin:cdata_comment</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#requesting_dg">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">DG has launched a request for caducity in the repertoire of the legislation in force</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#result_decision">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Result of the decision of a judicial procedure, encoded as http://publications.europa.eu/mdr/resource/authority/procresult/html/procresult-eng.html</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#role2">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Description of the target role for the amended act</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#rule">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">rule part of the structure of an act (currently not in Procat)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#script">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Script</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indication of the script used for a (transliterated) text, values from AT script</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#section">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">section part of the structure of an act (currently not in Procat)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#sentence">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">sentence part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#sequence_number">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">An ordered set of elements</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#start_of_validity">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Start of validity</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#status">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">status of an identifier manifestation, typically "valid" (if ever explicitly stated) or "invalid" (primarily for General Publications)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#subparagraph">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">subparagraph part of the structure of an act (e.g. for LB_DNPLUS)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#suffix">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Suffix part of a reference (in case of decomposition)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#timespan_duration">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Timespan duration</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">If only timespan start OR timespan end are specified, the timespan duration can characterise the duration relative to start OR end of a timespan</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#timespan_end">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Timespan end</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The end value (date, year-month, year) of a timespan</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#timespan_end_text">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Timespan end</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The textual decription of the end of a timespan to hold annotated information on the value.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#timespan_interval_text">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Timespan interval text</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The textual description of a timespan interval.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#timespan_start">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Timespan start</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The start value (date, year-month, year) of a timespan</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#timespan_start_text">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Timespan start</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The textual decription of the start of a timespan to hold annotated information on the value.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#title">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">section part of the structure of an act (currently not in Procat)</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">section part of the structure of an act (for legal data) or any other title string held in Axioms. Supposed to have xml:lang</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#transliteration">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Transliteration</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Transliterated text of the text in the annotated property; a string or literal with possibly xml:lang indication</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#transposition_deadline_transmitted">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Transposition deadline that the SecGen indicates for a NIM</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#transposition_notification">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Notification date by the Member State</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#type_instruction">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Indicates the way a modification instruction is formulated in the legal resource (e.g. explicitly, implicitly or general).</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#type_of_date">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Type of the date (e.g. for IF_TYPE)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#type_of_link_target">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Type of the link symbolized by this link target</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Value EA-SP to indicate that this relation is from the same procedure and should be displayed in Earlier (Subsequent) instruments on NEL</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#type_of_relation">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Type of relation</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Precision on a cdm:related_to relation with a type</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#type_of_reply">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Type of the reply to the question (makes only sense as the annotation of a date of reply)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#value_text">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Value text</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Textual value of an agent entity with annotational features for cataloguing</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#version">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Version</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Version of a software or mechanism.</rdfs:comment>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#volume-designation">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Volume name</rdfs:label>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The name of the volume, used for citation mode in General Publications.</rdfs:comment>
+      <dct:created rdf:datatype="http://www.w3.org/2001/XMLSchema#dateTime">2022-09-01T09:01:22</dct:created>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#year">
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Year part of a reference (in case of decomposition)</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://www.w3.org/2000/01/rdf-schema#comment"/>
+   <owl:AnnotationProperty rdf:about="http://www.w3.org/2000/01/rdf-schema#label"/>
+   <owl:AnnotationProperty rdf:about="http://www.w3.org/2002/07/owl#versionInfo"/>
+
+	  <!-- ### Deprecated entities ### -->
+
+	<owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#manifestation_restriction_on_use_jurisdiction">
+      <owl:deprecated/>
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">based on 540 $b</rdfs:label>
+   </owl:AnnotationProperty>
+   <owl:AnnotationProperty rdf:about="http://publications.europa.eu/ontology/annotation#manifestation_restriction_on_use_jurisdiction_object">
+      <owl:deprecated/>
+      <rdfs:label rdf:datatype="http://www.w3.org/2001/XMLSchema#string">based on 540 $3</rdfs:label>
+   </owl:AnnotationProperty>
+</rdf:RDF>

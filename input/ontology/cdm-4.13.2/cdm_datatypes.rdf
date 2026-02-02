@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xml:base="http://publications.europa.eu/ontology/datatype">
+
+	<!-- ### Ontologies ### -->
+
+	<owl:Ontology rdf:about="http://publications.europa.eu/ontology/datatype">
+      <owl:versionInfo>4.13.2</owl:versionInfo>
+   </owl:Ontology>
+
+	  <!-- ### everything else ### -->
+
+	<rdfs:Datatype rdf:about="http://publications.europa.eu/ontology/datatype#date">
+      <owl:equivalentClass>
+         <rdfs:Datatype>
+            <owl:unionOf rdf:parseType="Collection">
+               <rdf:Description rdf:about="http://www.w3.org/2001/XMLSchema#date"/>
+               <rdf:Description rdf:about="http://publications.europa.eu/ontology/datatype#unknown-date"/>
+               <rdf:Description rdf:about="http://www.w3.org/2001/XMLSchema#gYear"/>
+               <rdf:Description rdf:about="http://www.w3.org/2001/XMLSchema#gYearMonth"/>
+            </owl:unionOf>
+         </rdfs:Datatype>
+      </owl:equivalentClass>
+   </rdfs:Datatype>
+   <rdfs:Datatype rdf:about="http://publications.europa.eu/ontology/datatype#string_or_title">
+      <owl:equivalentClass>
+         <rdfs:Datatype>
+            <owl:unionOf rdf:parseType="Collection">
+               <rdf:Description rdf:about="http://www.w3.org/2001/XMLSchema#string"/>
+               <rdf:Description rdf:about="http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral"/>
+            </owl:unionOf>
+         </rdfs:Datatype>
+      </owl:equivalentClass>
+   </rdfs:Datatype>
+   <rdfs:Datatype rdf:about="http://publications.europa.eu/ontology/datatype#string_or_xml">
+      <owl:equivalentClass>
+         <rdfs:Datatype>
+            <owl:unionOf rdf:parseType="Collection">
+               <rdf:Description rdf:about="http://www.w3.org/2001/XMLSchema#string"/>
+               <rdf:Description rdf:about="http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral"/>
+               <rdf:Description rdf:about="http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral"/>
+            </owl:unionOf>
+         </rdfs:Datatype>
+      </owl:equivalentClass>
+   </rdfs:Datatype>
+   <rdfs:Datatype rdf:about="http://publications.europa.eu/ontology/datatype#unknown-date">
+      <owl:equivalentClass>
+         <rdfs:Datatype>
+            <owl:unionOf rdf:parseType="Collection">
+               <rdfs:Datatype>
+                  <owl:onDatatype rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+                  <owl:withRestrictions rdf:parseType="Collection">
+                     <rdf:Description>
+                        <xsd:pattern rdf:datatype="http://www.w3.org/2001/XMLSchema#string">unknown-future</xsd:pattern>
+                     </rdf:Description>
+                  </owl:withRestrictions>
+               </rdfs:Datatype>
+               <rdfs:Datatype>
+                  <owl:onDatatype rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+                  <owl:withRestrictions rdf:parseType="Collection">
+                     <rdf:Description>
+                        <xsd:pattern rdf:datatype="http://www.w3.org/2001/XMLSchema#string">unknown-past</xsd:pattern>
+                     </rdf:Description>
+                  </owl:withRestrictions>
+               </rdfs:Datatype>
+            </owl:unionOf>
+         </rdfs:Datatype>
+      </owl:equivalentClass>
+      <rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Unknown date in the past (currently 00000000) or in the future (may never come, currently 99999999)</rdfs:comment>
+   </rdfs:Datatype>
+</rdf:RDF>

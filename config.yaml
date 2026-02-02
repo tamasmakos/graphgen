@@ -1,0 +1,70 @@
+# GraphGen Configuration
+
+# Infrastructure & Integration
+infra:
+  graph_db_type: "neo4j" # options: "falkordb", "neo4j"
+  falkordb_host: "falkordb"
+  falkordb_port: 6379
+  neo4j_host: "neo4j"
+  neo4j_port: 7687
+  neo4j_user: "neo4j"
+  neo4j_password: "password"
+  postgres_host: "pgvector"
+  postgres_port: 5432
+  input_dir: "/app/input/txt/translated"
+  output_dir: "/app/output"
+
+# LLM Configuration
+llm:
+  base_model: "llama-3.1-8b-instant"
+  extraction_model: "meta-llama/llama-4-scout-17b-16e-instruct"
+  summarization_model: "llama-3.1-8b-instant"
+  temperature: 0.1
+
+# Extraction Settings
+extraction:
+  chunk_size: 1500
+  chunk_overlap: 200
+  backend: "spacy"  # options: "gliner", "spacy", "llm"
+  gliner_model: "urchade/gliner_medium-v2.1"
+  file_pattern: "CRE-9-2022-05-03-ITM-005_EN.txt"
+  speech_limit: 100
+
+# Graph Schema Definition
+# Dynamically loaded by the pipeline
+schema:
+  nodes:
+    Doc:
+      label: "Document"
+      source_type: "document"
+      attributes: ["filename", "date"]
+    
+    Chunk:
+      label: "TextChunk"
+      source_type: "chunk"
+      attributes: ["text", "speaker", "order"]
+    
+    Entity:
+      label: "NamedEntity"
+      source_type: "derived"
+      attributes: ["name", "type"]
+    
+    Topic:
+      label: "Topic"
+      source_type: "derived"
+      attributes: ["title", "keywords"]
+
+  edges:
+    - source_label: "Doc"
+      target_label: "Chunk"
+      relation_type: "HAS_CHUNK"
+      is_hierarchical: true
+    
+    - source_label: "Chunk"
+      target_label: "Entity"
+      relation_type: "MENTIONS"
+      is_hierarchical: false
+    
+    - source_label: "Doc"
+      target_label: "Topic"
+      relation_type: "HAS_TOPIC"

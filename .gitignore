@@ -3,7 +3,6 @@ requires
 __pycache__
 lib
 .gitignore
-input
 .pytest_cache
 .gemini*.log
 node_modules/
@@ -12,3 +11,7 @@ dist/
 .gemini
 output
 .env
+.agent
+graphgen.egg-info
+tests
+thesis

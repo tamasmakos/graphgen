@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["graphgen"]
+
+[project]
+name = "graphgen"
+version = "0.1.0"
+description = "A flexible Knowledge Graph generation pipeline"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "networkx",
+    "pydantic",
+    "pydantic-settings",
+    "spacy",
+    "langchain",
+    "falkordb",
+    "python-dotenv",
+    "pyyaml",
+    "groq",
+    "langchain-groq",
+    "gliner"
+]
+
+[project.scripts]
+graphgen = "graphgen.main:main"

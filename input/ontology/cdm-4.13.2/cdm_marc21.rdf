@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:ant="http://publications.europa.eu/ontology/marc21#"
+         xmlns:admin="http://publications.europa.eu/ontology/cdm/admin#"
+         xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xml:base="http://publications.europa.eu/ontology/cdm/marc21">
+
+	<!-- ### everything else ### -->
+
+	<owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/cdm#publication_general_has_target_audience"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/cdm#issn-serial_subscription_paid"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/cdm#issn-serial_access_url"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/annotation#comment_on_url"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/cdm#issn-serial_issued_by_agent"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/cdm#issn-serial_issued_by_agent"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/cdm#issn-serial_issued_by_agent"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/cdm#issn-serial_title_key"/>
+   </owl:Axiom>
+   <owl:Axiom>
+      <owl:annotatedSource rdf:resource="http://publications.europa.eu/ontology/annotation#information_additional"/>
+   </owl:Axiom>
+</rdf:RDF>
