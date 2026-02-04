@@ -124,20 +124,7 @@ async def add_segments_to_graph(deps: PipelineContext, segments: List[SegmentDat
     # Process segments concurrently
     tasks = []
     
-    extraction_config = config.get('extraction', {})
-    if hasattr(extraction_config, 'model_dump'):
-        extraction_config = extraction_config.model_dump()
-
-    limit = extraction_config.get('speech_limit', 0)
-    # Also support old key if needed, or just rely on 'speech_limit'
-    if 'segment_limit' in config:
-         limit = config['segment_limit']
-    
     for idx, segment in enumerate(segments):
-        # Check limit before creating task
-        if limit > 0 and deps.total_segments >= limit:
-            break
-        
         # Capture current global_segment_order before incrementing
         current_global_order = deps.total_segments
             
@@ -154,10 +141,6 @@ async def add_segments_to_graph(deps: PipelineContext, segments: List[SegmentDat
         tasks.append(task)
         segment_count += 1
         deps.total_segments += 1
-        
-        # Check limit after incrementing
-        if limit > 0 and deps.total_segments >= limit:
-            break
     
     # Wait for all segment processing tasks to complete
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -277,10 +260,19 @@ async def build_lexical_graph(deps: PipelineContext, input_dir: str, config: Dic
             filenames = [f for f in os.listdir(input_dir) if f.endswith('.txt')]
             logger.info(f"Found {len(filenames)} files to process")
         
+        # Apply test_mode document limit if configured
+        test_mode_cfg = config.get('test_mode', {})
+        if hasattr(test_mode_cfg, 'model_dump'):
+            test_mode_cfg = test_mode_cfg.model_dump()
+        
+        test_mode_enabled = test_mode_cfg.get('enabled', False)
+        max_documents = test_mode_cfg.get('max_documents', 0)
+        
+        if test_mode_enabled and max_documents > 0 and len(filenames) > max_documents:
+            logger.info(f"Test mode enabled: limiting to {max_documents} documents (from {len(filenames)} available)")
+            filenames = filenames[:max_documents]
+        
         for filename in filenames:
-            limit = config.get('segment_limit', config.get('speech_limit', 0))
-            if limit > 0 and deps.total_segments >= limit:
-                break
                 
             doc_result = await process_single_document_lexical(deps, filename, input_dir, config, schema=schema)
                 

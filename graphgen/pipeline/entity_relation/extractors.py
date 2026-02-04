@@ -24,15 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_EXTRACTION_PROMPT = ChatPromptTemplate.from_template(
-    """You are an expert at extracting knowledge graph entities and relationships from text.
-    
-    Focus on extracting information relevant to building a "Life Graph" or memory graph for the user.
-    Strictly identify and extract:
-    1. Life Patterns & Habits: Recurring activities, behaviors, or routines.
-    2. Things to Remember: Specific preferences, tasks, deadlines, or important details.
-    3. Entities: People, Places, Organizations, Concepts involved in the user's life.
-    4. Contextual Relations: How these entities relate to the user's daily life.
-    
+    """You are an expert at extracting knowledge graph entities and relationships from text.    
     Text:
     {input}
     """
@@ -94,28 +86,37 @@ class LangChainExtractor(BaseExtractor):
         abstract_concepts: List[str] = None
     ) -> Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]:
         """Extract relations using LangChain LLMGraphTransformer."""
-        entities = entities or []
-        abstract_concepts = abstract_concepts or []
+        # abstract_concepts now contains the ontology labels (Types)
+        allowed_nodes = abstract_concepts or []
+        # entities contains the hints from GLiNER/Spacy
+        discovered_hints = entities or []
         
-        allowed_nodes = list(set(entities + abstract_concepts))
+        # Inject hints into the prompt if available
+        hints_text = ""
+        if discovered_hints:
+            hints_text = f"\nPre-identified entities found in text: {', '.join(discovered_hints)}\n"
         
-        prompt = DEFAULT_EXTRACTION_PROMPT  # Use our life-graph focused default
+        prompt = custom_prompt or DEFAULT_EXTRACTION_PROMPT
+        
+        # We can wrap the prompt to include hints if needed, but for now let's use it as is
+        # or append hints to the input text
+        full_text = text
+        if hints_text:
+            full_text = f"{hints_text}\nInput Text:\n{text}"
         
         def _extract_sync():
-            # Initialize LLM in the worker thread to ensure event loop safety
-            # pass full config to get_langchain_llm
             llm = get_langchain_llm(self.config, purpose='extraction')
             
             transformer = LLMGraphTransformer(
                 llm=llm,
                 allowed_nodes=allowed_nodes,
                 prompt=prompt,
-                strict_mode=False,
+                strict_mode=True, # Set to True to strictly follow ontology
                 node_properties=False,
                 relationship_properties=False
             )
             
-            document = Document(page_content=text)
+            document = Document(page_content=full_text)
             return transformer.convert_to_graph_documents([document])
 
         retries = 3

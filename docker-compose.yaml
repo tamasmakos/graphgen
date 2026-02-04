@@ -83,13 +83,20 @@ services:
       - falkordb
       - pgvector
       - neo4j
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
   # --- Application Services ---
   graphgen:
     build:
       context: .
       dockerfile: Dockerfile
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: python -m graphgen.main
     environment:
       - FALKORDB_HOST=falkordb
       - POSTGRES_HOST=pgvector
@@ -101,12 +108,19 @@ services:
     volumes:
       - ./input:/app/input
       - ./output:/app/output
-      - ./src:/app/src
+      - ./graphgen:/app/graphgen
     depends_on:
       falkordb:
         condition: service_healthy
       pgvector:
         condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
 volumes:
   falkordb_data:

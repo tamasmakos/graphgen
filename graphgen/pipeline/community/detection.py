@@ -18,9 +18,13 @@ except ImportError:
 class CommunityDetector:
     """Community detection using Leiden algorithm."""
     
-    def __init__(self):
-        """Initialize the community detector."""
-        pass
+    def __init__(self, settings: Optional[Any] = None):
+        """Initialize the community detector.
+        
+        Args:
+            settings: CommunitySettings object or None
+        """
+        self.settings = settings
     
     def _get_entity_graph(self, graph: nx.Graph) -> nx.Graph:
         """Create a view of the graph containing only entity-relation edges."""
@@ -34,15 +38,15 @@ class CommunityDetector:
         
         def filter_node(n):
             """Filter for entity nodes only."""
-            node_type = graph.nodes[n].get('node_type', '')
-            return node_type in {'ENTITY_CONCEPT'}
+            node_type = str(graph.nodes[n].get('node_type', '')).upper()
+            return node_type in {'ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY'}
         
         # Create a subgraph view that only includes the specific edges AND entity nodes
         # We need to ensure we don't just get the induced subgraph of nodes, but the specific edges.
         # nx.subgraph_view with filter_edge does exactly that.
         return nx.subgraph_view(graph, filter_node=filter_node, filter_edge=filter_edge)
     
-    def run_leiden(self, graph, resolution=1.0):
+    def run_leiden(self, graph, resolution=1.0, seed=None):
         """Run Leiden algorithm once."""
         if graph.number_of_nodes() < 3 or graph.number_of_edges() == 0:
             return {node: 0 for node in graph.nodes()}
@@ -79,8 +83,12 @@ class CommunityDetector:
             partition_obj = la.find_partition(
                 g_ig, la.RBConfigurationVertexPartition,
                 resolution_parameter=resolution, 
-                weights=edge_weights
+                weights=edge_weights,
+                seed=seed
             )
+            
+            # Use igraph's modularity for efficiency if possible
+            modularity = g_ig.modularity(partition_obj.membership, weights=edge_weights)
             
             partition = {}
             for idx, community in enumerate(partition_obj):
@@ -88,23 +96,35 @@ class CommunityDetector:
                     node_id = node_list[node_idx]
                     partition[node_id] = idx
             
-            return partition
+            return partition, modularity
             
         except Exception as e:
             logger.error(f"Leiden algorithm failed: {e}")
-            return {node: 0 for node in graph.nodes()}
+            return {node: 0 for node in graph.nodes()}, 0.0
 
     def detect_communities(self, graph) -> Dict[str, Any]:
         """Main community detection method.
         
-        Subselects only the entity relation graph type and runs community detection ONLY on that subgraph.
+        Tries multiple resolutions and runs multiple times for consistency.
+        Selects the best partition based on modularity AFTER merging small communities.
         """
         import time
         start_time = time.time()
         
-        logger.info("=== LEIDEN COMMUNITY DETECTION (OPTIMIZED) ===")
-        logger.info("Subselecting 'entity_relation' graph type...")
+        logger.info("=== LEIDEN COMMUNITY DETECTION (MULTI-RESOLUTION) ===")
         
+        # Get settings
+        resolutions = [1.0]
+        n_iterations = 1
+        min_comm_size = 1
+        seed = None
+        
+        if self.settings:
+            resolutions = getattr(self.settings, 'resolutions', [1.0])
+            n_iterations = getattr(self.settings, 'n_iterations', 1)
+            min_comm_size = getattr(self.settings, 'min_community_size', 1)
+            seed = getattr(self.settings, 'seed', None)
+
         # Use the entity relation subgraph
         entity_graph = self._get_entity_graph(graph)
         
@@ -119,42 +139,73 @@ class CommunityDetector:
             }
             
         logger.info(f"Entity Graph: {entity_graph.number_of_nodes()} nodes, {entity_graph.number_of_edges()} edges")
+        logger.info(f"Param Search: {len(resolutions)} resolutions, {n_iterations} iterations each")
 
-        # Run Leiden Once
-        resolution = 1.0
-        communities = self.run_leiden(entity_graph, resolution)
+        best_partition = None
+        best_modularity = -float('inf')
+        best_res = 1.0
         
-        # Recalculate modularity
-        try:
-            community_sets = defaultdict(set)
-            for node, comm in communities.items():
-                if node in entity_graph:
-                    community_sets[comm].add(node)
+        for res in resolutions:
+            res_best_mod = -float('inf')
+            res_best_part = None
             
-            # Use entity_graph for modularity calculation
-            modularity = nx.algorithms.community.modularity(entity_graph, list(community_sets.values()))
-        except Exception:
-            modularity = 0.0
+            for i in range(n_iterations):
+                # Use seed + iteration for reproducibility if seed is provided
+                iter_seed = seed + i if seed is not None else None
+                partition, _ = self.run_leiden(entity_graph, resolution=res, seed=iter_seed)
+                
+                # CRITICAL: Merge small communities BEFORE evaluating modularity
+                # this ensures we pick the resolution that works best with our post-processing
+                if min_comm_size > 1:
+                    partition = self._merge_small_communities(entity_graph, partition, min_comm_size)
+                
+                # Calculate modularity for the merged partition
+                try:
+                    community_sets = defaultdict(set)
+                    for node, comm in partition.items():
+                        community_sets[comm].add(node)
+                    
+                    # Manual modularity check (Robust for merged sets)
+                    modularity = nx.algorithms.community.modularity(entity_graph, list(community_sets.values()))
+                except Exception:
+                    modularity = 0.0
+                
+                if modularity > res_best_mod:
+                    res_best_mod = modularity
+                    res_best_part = partition
+            
+            logger.info(f"  Resolution {res:.2f}: Best Merged Modularity = {res_best_mod:.4f}")
+            
+            if res_best_mod > best_modularity:
+                best_modularity = res_best_mod
+                best_partition = res_best_part
+                best_res = res
+
+        # Final assignments (ensure all nodes in original graph are covered)
+        all_assignments = {node: 0 for node in graph.nodes()}
+        all_assignments.update(best_partition)
 
         # Log stats
-        community_counts = Counter(communities.values())
+        community_counts = Counter(best_partition.values())
         community_sizes = list(community_counts.values())
         min_size = min(community_sizes) if community_sizes else 0
         max_size = max(community_sizes) if community_sizes else 0
         avg_size = float(np.mean(community_sizes)) if community_sizes else 0.0
         
-        logger.info(f"Leiden algorithm found {len(set(communities.values()))} communities")
-        logger.info(f"Stats: Min={min_size}, Max={max_size}, Avg={avg_size:.2f}")
-        logger.info(f"Modularity: {modularity:.4f}")
+        logger.info(f"Selected Best Configuration:")
+        logger.info(f"  Resolution: {best_res:.2f}")
+        logger.info(f"  Merged Modularity: {best_modularity:.4f}")
+        logger.info(f"  Final Community Count: {len(set(best_partition.values()))}")
+        logger.info(f"  Stats: Min={min_size}, Max={max_size}, Avg={avg_size:.2f}")
         
         duration_ms = (time.time() - start_time) * 1000
         logger.info(f"Community detection finished in {duration_ms:.2f}ms")
         
         return {
-            "assignments": communities,
-            "modularity": modularity,
-            "community_count": len(set(communities.values())),
-            "resolution": resolution,
+            "assignments": all_assignments,
+            "modularity": best_modularity,
+            "community_count": len(set(best_partition.values())),
+            "resolution": best_res,
             "execution_time_ms": duration_ms,
             "min_community_size": min_size,
             "max_community_size": max_size,
@@ -242,7 +293,8 @@ class CommunityDetector:
                  continue
 
             # Run Leiden once
-            part = self.run_leiden(subg, gamma)
+            # For subcommunities, we still use single run for now but fixed resolution
+            part, _ = self.run_leiden(subg, gamma)
             
             if len(set(part.values())) < 2:
                 continue

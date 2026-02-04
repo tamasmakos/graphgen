@@ -22,13 +22,60 @@ logger = logging.getLogger(__name__)
 GLINER_MODEL = None
 SPACY_MODEL = None
 
-def get_gliner_model():
+def get_gliner_model(config: Optional[Dict[str, Any]] = None):
     global GLINER_MODEL
     if GLINER_MODEL is None:
         try:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Loading GLiNER model (urchade/gliner_medium-v2.1) on {device}...")
-            GLINER_MODEL = GLiNER.from_pretrained("urchade/gliner_medium-v2.1", device=device)
+            # Default values
+            device = "cpu"
+            use_onnx = False
+            model_name = "urchade/gliner_medium-v2.1"
+            
+            if config:
+                extraction_cfg = config.get('extraction', {})
+                if hasattr(extraction_cfg, 'model_dump'):
+                    extraction_cfg = extraction_cfg.model_dump()
+                
+                requested_device = extraction_cfg.get('device', 'auto')
+                if requested_device == 'auto':
+                    # Robust check for CUDA
+                    try:
+                        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                            # Test if we can actually allocate a tensor
+                            torch.zeros(1).cuda()
+                            device = "cuda"
+                        else:
+                            device = "cpu"
+                    except Exception:
+                        device = "cpu"
+                else:
+                    device = requested_device
+                
+                use_onnx = extraction_cfg.get('use_onnx', False)
+                model_name = extraction_cfg.get('gliner_model', model_name)
+            else:
+                device = "cpu" # Default to cpu if no config to be safe
+
+            logger.info(f"Loading GLiNER model ({model_name}) on {device} (use_onnx={use_onnx})...")
+            
+            try:
+                # GLiNER 0.2.x uses map_location instead of device for from_pretrained
+                GLINER_MODEL = GLiNER.from_pretrained(
+                    model_name, 
+                    map_location=device,
+                    load_onnx_model=use_onnx
+                )
+            except Exception as e:
+                if device == "cuda":
+                    logger.warning(f"Failed to load GLiNER on CUDA ({e}), falling back to CPU...")
+                    GLINER_MODEL = GLiNER.from_pretrained(
+                        model_name, 
+                        map_location="cpu",
+                        load_onnx_model=use_onnx
+                    )
+                else:
+                    raise e
+                    
             logger.info(f"GLiNER model loaded on {device}.")
         except Exception as e:
             logger.error(f"Failed to load GLiNER: {e}")
@@ -101,7 +148,8 @@ async def process_extraction_task(
     task: ChunkExtractionTask,
     semaphore: asyncio.Semaphore,
     extractor: BaseExtractor,
-    precomputed_gliner_entities: List[Dict[str, Any]] = None
+    precomputed_gliner_entities: List[Dict[str, Any]] = None,
+    ontology_labels: List[str] = None
 ) -> Dict[str, Any]:
     """Process a single chunk extraction task"""
     async with semaphore:
@@ -109,35 +157,52 @@ async def process_extraction_task(
         logger.info(f"      🚀 Starting {task.chunk_id}")
         
         try:
-            # 1. Use precomputed GLiNER entities or fallback to empty
+            # 1. Use precomputed GLiNER/Spacy entities or fallback to empty
             gliner_entities = precomputed_gliner_entities or []
-
-            # 2. Run LLM Relation Extraction
-            # Use chunk text directly for extraction, pass keywords as allowed nodes
-            # Note: We use keywords as both entities and concepts for simplicity,             
-            # Combine all available "allowed node" sources
-            allowed_nodes = []
-            if task.keywords:
-                allowed_nodes.extend(task.keywords)
-            if task.entities:
-                allowed_nodes.extend(task.entities)
-            if task.abstract_concepts:
-                allowed_nodes.extend(task.abstract_concepts)
             
-            # Add GLINER entities to allowed_nodes
+            # 2. Prepare allowed nodes/types for LLM (Gatekeeper Logic)
+            # Find which ontology labels were actually discovered in this chunk
+            found_labels = set()
+            for ent in gliner_entities:
+                label = ent.get('label')
+                if label:
+                    found_labels.add(label)
+                    
+            # THE ONTOLOGY LABELS are filtered to only those found in this chunk
+            # This makes the LLM extraction much more focused and accurate
+            node_labels = list(found_labels)
+            logger.info(f"Chunk {task.chunk_id}: Found labels: {node_labels}")
+            
+            # Fallback: if GLiNER found nothing, we might want to allow 
+            # the full set or a default set, but per user request, we focus on findings.
+            # To avoid total failure, let's include 'Concept' or basic labels if none found
+            if not node_labels and ontology_labels:
+                 # Check if we should allow a "safe subset" or the full set when no hits
+                 # For now, let's use the full set as fallback to not miss entities,
+                 # but logged as a weak hit
+                 node_labels = ontology_labels
+                 logger.debug(f"Chunk {task.chunk_id}: No labels found by NER, using full ontology set as fallback")
+            
+            # THE DISCOVERED ENTITIES are guidance/hints for extraction
+            discovered_entities = []
+            if task.entities:
+                discovered_entities.extend(task.entities)
             if gliner_entities:
                 gliner_texts = [e.get('text') for e in gliner_entities if e.get('text')]
-                allowed_nodes.extend(gliner_texts)
+                discovered_entities.extend(gliner_texts)
             
-            # Deduplicate
-            allowed_nodes = list(set(allowed_nodes))
+            # Deduplicate Discoveries
+            discovered_entities = list(set(discovered_entities))
             
+            # Run LLM Relation Extraction
+            # We pass ONLY FOUND LABELS as 'abstract_concepts' (allowed node types)
+            # We pass discovered_entities as 'entities' for guidance
             raw_relations, raw_nodes = await extract_relations_with_llm_async(
                 text=task.chunk_text,
                 extractor=extractor,
                 keywords=task.keywords,
-                entities=allowed_nodes, # Pass as entities for LangChain extractor
-                abstract_concepts=[] # Already merged into entities
+                entities=discovered_entities, 
+                abstract_concepts=node_labels 
             )
             
             chunk_data = {
@@ -164,8 +229,8 @@ async def process_extraction_task(
 async def _generate_entity_hints(
     tasks: List[ChunkExtractionTask], 
     config: Dict[str, Any]
-) -> Dict[str, List[Dict[str, str]]]:
-    """Generate entity hints using GLiNER or Spacy."""
+) -> Tuple[Dict[str, List[Dict[str, str]]], List[str]]:
+    """Generate entity hints using GLiNER or Spacy, and resolve ontology labels."""
     extraction_config = config.get('extraction', {})
     if hasattr(extraction_config, 'model_dump'):
         extraction_config = extraction_config.model_dump()
@@ -173,6 +238,11 @@ async def _generate_entity_hints(
     extraction_backend = extraction_config.get('backend', 'gliner')
     results_map = {}
     
+    # Resolve ontology labels (used by all backends for consistency)
+    from graphgen.utils.labels import resolve_entity_labels
+    labels = resolve_entity_labels(extraction_config)
+    logger.info(f"Using {len(labels)} entity labels for extraction pipeline")
+
     if extraction_backend == 'spacy':
         # --- SPACY Extraction ---
         logger.info(f"Step 2.1: Bulk Spacy Extraction for {len(tasks)} chunks...")
@@ -182,13 +252,17 @@ async def _generate_entity_hints(
             
             if nlp:
                 texts = [task.chunk_text for task in tasks]
-                # Use nlp.pipe for efficiency
                 docs = list(nlp.pipe(texts))
                 
                 for task, doc in zip(tasks, docs):
                     extracted = []
                     for ent in doc.ents:
-                        extracted.append({"text": ent.text})
+                        # Map Spacy labels to ontology labels if there's a match/similarity (basic for now)
+                        # Or just pass the text as hint
+                        extracted.append({
+                            "text": ent.text,
+                            "label": ent.label_ # Spacy's original label
+                        })
                     results_map[task.chunk_id] = extracted
                 
                 logger.info(f"Bulk Spacy complete. Extracted entities for {len(results_map)} chunks.")
@@ -200,10 +274,8 @@ async def _generate_entity_hints(
         # --- GLiNER Extraction (Default) ---
         logger.info(f"Step 2.1: Bulk GLiNER Pass for {len(tasks)} chunks...")
         try:
-            model = get_gliner_model()
+            model = get_gliner_model(config)
             if model:
-                labels = extraction_config.get('gliner_labels', ["Person", "Organization", "Location", "Event", "Date", "Award", "Competitions", "Teams", "Concept"])
-                
                 all_sentences = []
                 sentence_to_task_map = []
                 
@@ -232,7 +304,7 @@ async def _generate_entity_hints(
         except Exception as e:
             logger.error(f"Bulk GLiNER extraction failed: {e}")
 
-    return results_map
+    return results_map, labels
 
 async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str, Any], extractor: BaseExtractor = None) -> Dict[str, Any]:
     """Phase 2: Parallel entity/relation extraction"""
@@ -257,15 +329,22 @@ async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str
         
     logger.info(f"Using {extractor.__class__.__name__} for relation extraction")
     
-    # Generate Entity Hints
-    gliner_results_map = await _generate_entity_hints(unique_tasks, config)
+    # Generate Entity Hints and resolve ontology labels
+    gliner_results_map, ontology_labels = await _generate_entity_hints(unique_tasks, config)
 
     try:
         # Use max_concurrent from config for controlled parallelization
         max_concurrent = get_max_concurrent(config, default=8)
         semaphore = asyncio.Semaphore(max_concurrent)
         
-        tasks = [process_extraction_task(deps, task, semaphore, extractor, gliner_results_map.get(task.chunk_id, [])) for task in unique_tasks]
+        tasks = [process_extraction_task(
+            deps, 
+            task, 
+            semaphore, 
+            extractor, 
+            gliner_results_map.get(task.chunk_id, []),
+            ontology_labels # Pass labels to guiding LLM and classification
+        ) for task in unique_tasks]
         results = await asyncio.gather(*tasks)
         
         successful = sum(1 for r in results if r.get("success"))
@@ -338,17 +417,22 @@ async def add_triplets_to_graph_for_segment(
     
     # Add entities
     for _, mapped_ent in entity_mappings.items():
-        # Classify entity using GLiNER map
-        ontology_label = gliner_label_map.get(mapped_ent)
-        if not ontology_label:
-            ontology_label = gliner_label_map.get(mapped_ent.lower(), "Concept")
+        # Classify entity using LLM type map or GLiNER map
+        # LLM type is highly reliable now as it follows ontology strict_mode
+        llm_type = llm_type_map.get(mapped_ent)
+        gliner_label = gliner_label_map.get(mapped_ent)
+        if not gliner_label:
+            gliner_label = gliner_label_map.get(mapped_ent.lower())
+            
+        # Use LLM type if available, fallback to GLiNER/Spacy, then default
+        ontology_label = llm_type or gliner_label or "Concept"
             
         if not graph.has_node(mapped_ent):
             # Create new node
             graph.add_node(mapped_ent, 
                          node_type="ENTITY_CONCEPT", 
                          ontology_class=ontology_label,
-                         llm_type=llm_type_map.get(mapped_ent),
+                         llm_type=llm_type,
                          name=mapped_ent, 
                          graph_type="entity_relation")
         else:
@@ -359,14 +443,18 @@ async def add_triplets_to_graph_for_segment(
             if 'name' not in node_data:
                 node_data['name'] = mapped_ent
                 
-            # Update llm_type if available and not set
-            if llm_type_map.get(mapped_ent) and not node_data.get('llm_type'):
-                node_data['llm_type'] = llm_type_map.get(mapped_ent)
+            # Update llm_type if available
+            if llm_type:
+                node_data['llm_type'] = llm_type
                 
-            # Smart update for ontology_class
-            current_class = node_data.get('ontology_class')
-            if not current_class or (current_class == 'Concept' and ontology_label != 'Concept'):
-                node_data['ontology_class'] = ontology_label
+            # Smart update for ontology_class: prioritize LLM type, then GLiNER
+            if llm_type:
+                node_data['ontology_class'] = llm_type
+            elif not node_data.get('ontology_class') or node_data.get('ontology_class') == 'Concept':
+                if gliner_label:
+                    node_data['ontology_class'] = gliner_label
+                elif 'ontology_class' not in node_data:
+                    node_data['ontology_class'] = 'Concept'
                 
             # Ensure node_type is set (if it was created implicitly)
             if 'node_type' not in node_data:

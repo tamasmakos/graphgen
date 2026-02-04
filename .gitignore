@@ -11,7 +11,10 @@ dist/
 .gemini
 output
 .env
-.agent
 graphgen.egg-info
 tests
+# Docker artifacts
+.docker/
+.agent
+output
 thesis

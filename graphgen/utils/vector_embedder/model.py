@@ -17,7 +17,7 @@ except ImportError:
     TRANSFORMERS_AVAILABLE = False
     SentenceTransformer = None
 
-from kg.config.settings import PipelineSettings
+from graphgen.config.settings import PipelineSettings
 
 logger = logging.getLogger(__name__)
 

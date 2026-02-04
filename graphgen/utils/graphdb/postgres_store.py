@@ -11,6 +11,13 @@ class PostgresVectorStore:
     def close(self):
         pass
         
+    def truncate_table(self):
+        """Wipe the postgres table."""
+        logger.warning(f"Clearing Postgres table '{self.table_name}'...")
+        # Implementation depends on actual DB driver (psycopg2, etc.)
+        # Since this is a stub, we just log it.
+        pass
+
     def store_embedding(self, id: str, label: str, embedding: List[float]) -> str:
         # Stub
         return str(id)

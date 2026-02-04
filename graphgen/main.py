@@ -62,8 +62,14 @@ async def main():
         from graphgen.pipeline.entity_relation.extractors import get_extractor
         extractor = get_extractor(settings.model_dump())
         
-        # Initialize the pipeline
-        pipeline = KnowledgePipeline(settings, uploader, extractor)
+        # Check for Iterative Mode
+        if settings.iterative.enabled:
+            from graphgen.pipeline.iterative_orchestrator import IterativeOrchestrator
+            logger.info("Starting Iterative Pipeline Orchestrator...")
+            pipeline = IterativeOrchestrator(settings, uploader, extractor)
+        else:
+            # Initialize the standard pipeline
+            pipeline = KnowledgePipeline(settings, uploader, extractor)
         
         # Run
         await pipeline.run()

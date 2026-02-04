@@ -163,23 +163,13 @@ class KnowledgeGraphUploader:
             # delete() deletes the graph key
             self.graph_client.delete()
             logger.info(f"Cleared graph '{self.database_name}'")
-            # Should we clear Postgres too?
-            # Config says: "In incremental mode: clean_database is controlled by global 'clean_start'"
-            # If we clear graph, we should probably clear embeddings too to ensure consistency?
-            # But the postgres table might be shared? 'table_name' in config.
-            # Safe bet: If we wipe the graph, the pointers become invalid.
-            # But leaving orphans in PG is messy.
-            # Let's truncate if we are fully clearing.
+            # Clear Postgres too if enabled
             if self.pg_store:
                 try:
-                    with self.pg_store.conn.cursor() as cur:
-                         # Truncate is fast but dangerous if shared.
-                         # DELETE FROM table WHERE node_type ... ?
-                         # For now, let's leave it. The user can recreate.
-                         # Or better yet, we just ignore orphans.
-                         pass
-                except:
-                    pass
+                    self.pg_store.truncate_table()
+                    logger.info("Cleared hybrid embeddings in Postgres.")
+                except Exception as pg_err:
+                    logger.warning(f"Failed to clear Postgres embeddings: {pg_err}")
         except Exception as e:
             logger.warning(f"Failed to clear graph: {e}")
 

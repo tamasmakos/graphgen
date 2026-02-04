@@ -128,11 +128,11 @@ async def find_entities_for_community_async(graph: nx.DiGraph, topic_node_id: st
             if node_type == 'SUBTOPIC':
                 for sub_pred in graph.predecessors(pred):
                     sub_node_type = str(graph.nodes[sub_pred].get('node_type', '')).upper()
-                    if sub_node_type in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE']:
+                    if sub_node_type in ['ENTITY']:
                         entity_ids.append(sub_pred)
                         
             # If predecessor is directly an Entity
-            elif node_type in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE']:
+            elif node_type in ['ENTITY']:
                 entity_ids.append(pred)
     
     return entity_ids
@@ -147,7 +147,7 @@ async def find_chunks_for_entities_async(graph: nx.DiGraph, entity_ids: List[str
             for pred in graph.predecessors(entity_id):
                 node_data = graph.nodes[pred]
                 node_type = str(node_data.get('node_type', '')).upper()
-                if node_type == 'CHUNK':
+                if node_type in ['CHUNK']:
                     chunk_ids.add(pred)
     
     return list(chunk_ids)
@@ -217,15 +217,15 @@ async def collect_community_tasks_async(graph: nx.DiGraph) -> List[Summarization
                 for neighbor in graph.predecessors(topic_node_id):
                     if graph.nodes[neighbor].get('node_type') == 'SUBTOPIC':
                         for sub_neighbor in graph.predecessors(neighbor):
-                            if graph.nodes[sub_neighbor].get('node_type') == 'ENTITY_CONCEPT':
+                            if str(graph.nodes[sub_neighbor].get('node_type', '')).upper() in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY']:
                                 # Entity -> Subtopic, now look for Chunk -> Entity
                                 for entity_pred in graph.predecessors(sub_neighbor):
-                                    if graph.nodes[entity_pred].get('node_type') == 'CHUNK':
+                                    if str(graph.nodes[entity_pred].get('node_type', '')).upper() in ['CHUNK', 'TEXTCHUNK']:
                                         chunk_ids.append(entity_pred)
             
             # If still no chunks, use fallback: any chunks in graph
             if not chunk_ids:
-                all_chunks = [n for n, d in graph.nodes(data=True) if d.get('node_type') == 'CHUNK']
+                all_chunks = [n for n, d in graph.nodes(data=True) if str(d.get('node_type', '')).upper() in ['CHUNK', 'TEXTCHUNK']]
                 if all_chunks:
                     chunk_ids = all_chunks[:10] # Increased slightly
                     logger.info(f"Using fallback chunks for topic {community_id}: {len(chunk_ids)} chunks")
@@ -256,7 +256,6 @@ async def collect_community_tasks_async(graph: nx.DiGraph) -> List[Summarization
             )
             
             tasks.append(task)
-            logger.info(f"Created task for topic {community_id}: {len(entity_ids)} entities, {len(sorted_chunk_ids)} chunks, {len(concatenated_text)} chars")
             
         except Exception as e:
             logger.error(f"Error creating task for topic {topic_node_id}: {e}")
@@ -295,7 +294,7 @@ async def collect_subcommunity_tasks_async(graph: nx.DiGraph) -> List[Summarizat
             entity_ids = []
             if graph.has_node(subtopic_node_id):
                 for pred in graph.predecessors(subtopic_node_id):
-                    if graph.nodes[pred].get('node_type') in ['ENTITY', 'ENTITY_CONCEPT']:
+                    if str(graph.nodes[pred].get('node_type', '')).upper() in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY']:
                         entity_ids.append(pred)
             
             if not entity_ids:
@@ -331,7 +330,6 @@ async def collect_subcommunity_tasks_async(graph: nx.DiGraph) -> List[Summarizat
             )
             
             tasks.append(task)
-            logger.info(f"Created task for subtopic {community_id}_{subcommunity_id}: {len(entity_ids)} entities, {len(sorted_chunk_ids)} chunks, {len(concatenated_text)} chars")
             
         except Exception as e:
             logger.error(f"Error creating task for subtopic {subtopic_node_id}: {e}")

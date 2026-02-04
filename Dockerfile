@@ -1,14 +1,32 @@
-FROM python:3.11-slim
-# Install system build deps for science libs
-RUN apt-get update && apt-get install -y build-essential curl git nodejs npm
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+# Install Python 3.11 and system build deps
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3-pip \
+    build-essential \
+    curl \
+    git \
+    nodejs \
+    npm \
+    wget \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set python3.11 as default python
+RUN ln -s /usr/bin/python3.11 /usr/bin/python
+
 WORKDIR /app
+
 COPY requirements.txt .
+
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
 # Download Spacy model
 RUN python -m spacy download en_core_web_lg
+
 # Download NLTK data
 RUN python -c "import nltk; nltk.download('punkt'); nltk.download('stopwords'); nltk.download('wordnet'); nltk.download('omw-1.4');"
-# Install wget and procps (for ps) for VS Code Server
-RUN apt-get update && apt-get install -y wget procps
-COPY src/ ./src
-COPY main.py .
+
+COPY graphgen/ ./graphgen

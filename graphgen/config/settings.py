@@ -11,7 +11,7 @@ Usage:
 """
 
 from typing import List, Optional, Dict, Any
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class InfrastructureSettings(BaseSettings):
@@ -45,6 +45,8 @@ class InfrastructureSettings(BaseSettings):
     # --- Filesystem (Docker Volumes) ---
     input_dir: str = Field("/app/input", alias="INPUT_DIR")
     output_dir: str = Field("/app/output", alias="OUTPUT_DIR")
+    
+    clean_start: bool = Field(True, alias="CLEAN_START")
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -70,6 +72,43 @@ class LLMSettings(BaseSettings):
     )
 
 
+class OntologySettings(BaseSettings):
+    """
+    Ontology-based label extraction configuration.
+    
+    When enabled, extracts entity labels from RDF/OWL ontology files
+    to use as GLiNER extraction labels. This enables domain-specific
+    entity recognition based on ontology class definitions.
+    """
+    enabled: bool = False  # Toggle ontology label extraction
+    ontology_dir: str = "/app/input/ontology/cdm-4.13.2"  # Directory with RDF files
+    namespace_filter: Optional[str] = None  # Filter to specific namespace prefix
+    merge_with_manual: bool = True  # Merge with gliner_labels or replace
+    top_level_only: bool = True  # Only include classes with no named parents
+    min_subclasses: int = 0  # Only include classes with at least this many subclasses
+    include_local_names: bool = True  # Use URI local names as fallback
+
+    model_config = SettingsConfigDict(
+        populate_by_name=True,
+        extra="ignore"
+    )
+
+
+class IterativeSettings(BaseSettings):
+    """
+    Iterative Experiment Configuration.
+    """
+    enabled: bool = Field(False, alias="ITERATIVE_ENABLED")
+    batch_size: int = Field(100, alias="ITERATIVE_BATCH_SIZE")
+    iterations: int = Field(5, alias="ITERATIVE_ITERATIONS")
+    random_seed: int = Field(42, alias="ITERATIVE_RANDOM_SEED")
+
+    model_config = SettingsConfigDict(
+        populate_by_name=True,
+        extra="ignore"
+    )
+
+
 class ExtractionSettings(BaseSettings):
     """
     Internal Extraction Logic.
@@ -80,16 +119,27 @@ class ExtractionSettings(BaseSettings):
     chunk_overlap: int = 100
     
     # Extraction Backend preference
-    backend: str = "spacy"  # options: "gliner", "spacy", "llm"
+    backend: str = "llm"  # options: "gliner", "spacy", "llm"
     
     # GLiNER Configuration
     gliner_model: str = "urchade/gliner_medium-v2.1"
     gliner_threshold: float = 0.5
-    gliner_labels: List[str] = [
-        "Person", "Organization", "Location", "Event", 
-        "Date", "Concept", "Product", "Skill", "Award", 
-        "Competitions", "Teams"
-    ]
+    device: str = "auto" # "auto", "cuda", "cpu"
+    use_onnx: bool = False
+    # Entity labels (used by GLiNER, Spacy hints, and LLM categories)
+    entity_labels: List[str] = Field(default_factory=list, alias="gliner_labels")
+
+    @field_validator("entity_labels", mode="before")
+    @classmethod
+    def validate_entity_labels(cls, v: Any) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [str(item) for item in v]
+        return []
+    
+    # Ontology-based label extraction
+    ontology: OntologySettings = Field(default_factory=OntologySettings)
     
     # Spacy Configuration
     spacy_model: str = "en_core_web_lg"
@@ -97,10 +147,8 @@ class ExtractionSettings(BaseSettings):
     # Performance
     max_concurrent_chunks: int = 8
     
-    # Legacy/Misc
-    file_pattern: str = "*.csv"
-    speech_limit: int = 10
-    max_documents: int = 20
+    # File Selection (for incremental/selective processing)
+    file_pattern: str = Field("*.txt", alias="EXTRACTION_FILE_PATTERN")
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -120,9 +168,6 @@ class ProcessingSettings(BaseSettings):
     
     # Similarity & Resolution
     similarity_threshold: float = 0.95
-    
-    # Community Detection
-    resolution: float = 1.0
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -145,6 +190,74 @@ class EmbeddingSettings(BaseSettings):
     )
 
 
+class KGESettings(BaseSettings):
+    """
+    PyKeen Knowledge Graph Embedding Configuration.
+    
+    When enabled, trains a KGE model on entity-relation triples and uses
+    the resulting embeddings to compute edge weights for Leiden community detection.
+    """
+    enabled: bool = False  # Toggle KGE training and weighted communities
+    model: str = "DistMult"  # PyKeen model type
+    embedding_dim: int = 64
+    learning_rate: float = 0.01
+    num_epochs: int = 50
+    early_stopping_patience: int = 5
+
+    model_config = SettingsConfigDict(
+        populate_by_name=True,
+        extra="ignore"
+    )
+
+
+class AnalysisSettings(BaseSettings):
+    """
+    Statistical Analysis Configuration.
+    
+    Controls the topic/community embedding separation tests that verify
+    whether communities form distinct semantic clusters.
+    """
+    topic_separation_test: bool = True  # Enable/disable statistical tests
+    output_file: str = "topic_separation_stats.json"  # Output filename
+    hierarchy_levels: List[str] = ["COMMUNITY", "SUBCOMMUNITY"]  # Levels to analyze
+
+    model_config = SettingsConfigDict(
+        populate_by_name=True,
+        extra="ignore"
+    )
+
+
+class TestModeSettings(BaseSettings):
+    """
+    Test Mode Configuration.
+    
+    When enabled, limits the number of documents processed for faster testing.
+    Set max_documents to 0 to process all documents (no limit).
+    """
+    enabled: bool = False  # Toggle test mode
+    max_documents: int = 0  # 0 = no limit, process all documents
+
+    model_config = SettingsConfigDict(
+        populate_by_name=True,
+        extra="ignore"
+    )
+
+
+
+class CommunitySettings(BaseSettings):
+    """
+    Leiden Community Detection Configuration.
+    """
+    resolutions: List[float] = [0.5, 0.75, 1.0, 1.25, 1.5]
+    n_iterations: int = 10  # Number of iterations for consistency
+    min_community_size: int = 3  # Merge communities smaller than this
+    seed: Optional[int] = 42
+
+    model_config = SettingsConfigDict(
+        populate_by_name=True,
+        extra="ignore"
+    )
+
 
 class PipelineSettings(BaseSettings):
     """
@@ -156,6 +269,11 @@ class PipelineSettings(BaseSettings):
     extraction: ExtractionSettings = Field(default_factory=ExtractionSettings)
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    kge: KGESettings = Field(default_factory=KGESettings)
+    analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
+    community: CommunitySettings = Field(default_factory=CommunitySettings)
+    test_mode: TestModeSettings = Field(default_factory=TestModeSettings)
+    iterative: IterativeSettings = Field(default_factory=IterativeSettings)
     
     # Global/Runtime flags
     debug: bool = False
