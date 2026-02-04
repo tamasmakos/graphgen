@@ -18,9 +18,9 @@ from graphgen.utils.graphdb.uploader import KnowledgeGraphUploader
 from graphgen.pipeline.lexical_graph_building.builder import build_lexical_graph
 from graphgen.pipeline.entity_relation.extraction import extract_all_entities_relations
 from graphgen.pipeline.entity_relation.extractors import BaseExtractor
-from graphgen.graph.pruning import prune_graph
+from graphgen.pipeline.graph_cleaning.pruning import prune_graph
 from graphgen.utils.utils import create_output_directory
-from graphgen.graph.schema import save_graph_schema
+from graphgen.utils.schema_utils import save_graph_schema
 from graphgen.utils.health import check_falkordb
 
 logger = logging.getLogger(__name__)

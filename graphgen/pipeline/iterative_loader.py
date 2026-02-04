@@ -33,24 +33,8 @@ class IterativeLoader:
                 
             file_path = os.path.join(self.input_dir, filename)
             try:
-                # Extract date from filename if possible (e.g., CRE-9-2022-05-03...)
-                doc_date_str = None
-                try:
-                    parts = filename.split('-')
-                    # Expecting format like CRE-9-YYYY-MM-DD-ITM...
-                    # YYYY-MM-DD would be parts[2]-parts[3]-parts[4]
-                    if len(parts) >= 5:
-                        date_str = f"{parts[2]}-{parts[3]}-{parts[4]}"
-                        # Validate
-                        datetime.strptime(date_str, "%Y-%m-%d")
-                        doc_date_str = date_str
-                except Exception:
-                    pass
-                
-                if not doc_date_str:
-                    doc_date_str = datetime.now().strftime("%Y-%m-%d")
-                
-                doc_date = datetime.strptime(doc_date_str, "%Y-%m-%d").date()
+                # No date parsing as requested
+                doc_date = None
 
                 with open(file_path, 'r', encoding='utf-8') as f:
                     for line_idx, line in enumerate(f):

@@ -19,7 +19,7 @@ class SegmentData(BaseModel):
     segment_id: str
     content: str
     line_number: int
-    date: Any # datetime.date but Any for simplicity in pydantic
+    date: Optional[Any] = None # datetime.date but Any for simplicity in pydantic
     sentiment: float = 0.0
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

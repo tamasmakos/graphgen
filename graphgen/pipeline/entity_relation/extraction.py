@@ -170,8 +170,13 @@ async def process_extraction_task(
                     
             # THE ONTOLOGY LABELS are filtered to only those found in this chunk
             # This makes the LLM extraction much more focused and accurate
+            # This makes the LLM extraction much more focused and accurate
             node_labels = list(found_labels)
-            logger.info(f"Chunk {task.chunk_id}: Found labels: {node_labels}")
+            
+            if not node_labels:
+                 logger.info(f"Chunk {task.chunk_id}: Found labels: [] (GLiNER raw: {gliner_entities})")
+            else:
+                 logger.info(f"Chunk {task.chunk_id}: Found labels: {node_labels}")
             
             # Fallback: if GLiNER found nothing, we might want to allow 
             # the full set or a default set, but per user request, we focus on findings.
@@ -300,7 +305,10 @@ async def _generate_entity_hints(
                             results_map[chunk_id] = []
                         results_map[chunk_id].extend(preds)
                     
-                    logger.info(f"Bulk GLiNER complete. Extracted entities for {len(results_map)} chunks.")
+                    total_extracted = sum(len(x) for x in results_map.values())
+                    logger.info(f"Bulk GLiNER complete. Extracted {total_extracted} entities for {len(results_map)} chunks. Labels used: {labels[:10]}...")
+                    if total_extracted == 0:
+                         logger.warning("GLiNER found NO entities. Check labels or model.")
         except Exception as e:
             logger.error(f"Bulk GLiNER extraction failed: {e}")
 

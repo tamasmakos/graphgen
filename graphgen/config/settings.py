@@ -13,6 +13,7 @@ Usage:
 from typing import List, Optional, Dict, Any
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from graphgen.config.schema import get_default_schema
 
 class InfrastructureSettings(BaseSettings):
     """
@@ -280,7 +281,7 @@ class PipelineSettings(BaseSettings):
     
     # Schema is dynamic and not part of env settings usually
     # We can store it here or separately. Storing here for convenience.
-    schema_config: Dict[str, Any] = Field(default_factory=dict, alias="schema") # Raw schema dict
+    schema_config: Dict[str, Any] = Field(default_factory=lambda: get_default_schema().model_dump(), alias="schema") 
 
     model_config = SettingsConfigDict(
         env_file=".env",

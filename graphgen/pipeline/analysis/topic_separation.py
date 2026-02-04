@@ -283,6 +283,10 @@ def run_silhouette_analysis(
         logger.warning("Need at least 2 clusters for silhouette analysis")
         return None, None
     
+    if len(unique_labels) >= len(X):
+        logger.info(f"Skipping silhouette analysis: too many clusters ({len(unique_labels)}) relative to samples ({len(X)})")
+        return None, None
+    
     try:
         # Overall score
         overall = silhouette_score(X, y)
@@ -351,6 +355,10 @@ def run_anova_analysis(
             return None, None
         
         # Run one-way ANOVA
+        # Check if we have at least one group with > 1 sample to estimate variance
+        if all(len(g) < 2 for g in groups):
+             return None, None
+
         f_stat, p_value = f_oneway(*groups)
         
         return float(f_stat), float(p_value)
@@ -412,6 +420,11 @@ def run_manova_approximation(
             groups = [g for g in groups if len(g) > 0]
             if len(groups) < 2:
                 continue
+            
+            # Check if we have at least one group with > 1 sample
+            if all(len(g) < 2 for g in groups):
+                continue
+                
             f_stat, p_val = f_oneway(*groups)
             f_stats.append(f_stat)
             p_values.append(p_val)

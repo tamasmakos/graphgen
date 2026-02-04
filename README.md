@@ -1,5 +1,19 @@
 # GraphGen: Knowledge Graph Generation Package
 
+## Schema Structure
+The Knowledge Graph follows a strict hierarchy:
+`DOC` -> `SEGMENT` (Line) -> `CHUNK` (Split) -> `ENTITY` -> `TOPIC`
+
+- **DOC**: Represents a source file.
+- **SEGMENT**: Represents a single line from the source file.
+- **CHUNK**: A lexical split of the segment (for embedding/extraction).
+- **ENTITY**: Extracted named entity.
+- **TOPIC**: Hierarchical topic cluster.
+
+## Iterative Experimentation
+The pipeline supports iterative processing of segments to simulate graph growth. 
+This mode includes automatic upload of the final cumulative graph to the configured database (Neo4j/FalkorDB).
+
 This python package provides a highly flexible pipeline for generating Knowledge Graphs from raw text data. It is designed to be modular, decoupling the lexical graph construction from semantic entity extraction.
 
 ## 📦 Installation
@@ -84,7 +98,7 @@ The package is organized into the following core components:
 - **`graph_cleaning.resolution`**: Handles entity resolution and merging.
 - **`embeddings.kge`**: **[NEW]** PyKeen Knowledge Graph Embedding training module. Trains KGE models (e.g., DistMult) on entity-relation triples and computes edge weights for improved community detection.
 - **`summarization.core`**: **[NEW]** Hierarchical summarization module. Generates titles and summaries for topics and subtopics using LLMs. Optimized for label robustness, handling variations like `Chunk` and `NamedEntity`.
-- **`analysis.topic_separation`**: **[NEW]** Statistical analysis of topic/community embedding separation. Implements silhouette scores, MANOVA, and pairwise tests to verify semantic clustering.
+- **`analysis.topic_separation`**: **[NEW]** Statistical analysis of topic/community embedding separation. Implements silhouette scores, MANOVA, and pairwise tests to verify semantic clustering. Gracefully handles small sample sizes and singleton clusters by skipping inapplicable tests.
 
 ### Utilities (`graphgen.utils`)
 - **`graphdb.uploader`**: Handles bulk uploading of the NetworkX graph to FalkorDB (RedisGraph) and hybrid vector storage in Postgres.
@@ -132,7 +146,7 @@ The pipeline uses a "gatekeeper" architecture to ensure high precision and stric
 1.  **Discovery**: GLiNER/Spacy scans a text chunk for all classes defined in the ontology.
 2.  **Schema Filtering**: The extraction schema for that specific chunk is dynamically restricted to *only* the classes discovered in step 1.
 3.  **Strict LLM Extraction**: The LLM acts as the final extractor, operating in `strict_mode=True`. It identifies relationships and instances but is strictly constrained to the ontology types verified by the NER gatekeeper.
-4.  **Classification**: Entities are automatically tagged with their validated `ontology_class`, enabling seamless integration with existing RDF/OWL knowledge bases.
+4.  **Classification**: Entities are automatically tagged with their validated `ontology_class` (from the LLM) and the original `gliner_type` (from the NER step), enabling seamless integration with existing RDF/OWL knowledge bases while preserving detection traceability.
 
 ### Knowledge Graph Embeddings (PyKeen)
 

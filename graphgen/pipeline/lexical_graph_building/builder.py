@@ -33,56 +33,42 @@ async def process_single_segment(
     async with semaphore:
         chunk_count = 0
         
-        # Determine Node Labels from Schema
-        chunk_label = "CHUNK" # Default
-        if schema and "Chunk" in schema.nodes:
-            chunk_label = schema.nodes["Chunk"].label
-            
-            # If "Chunk" source type is "segment", then the Segment IS the Chunk
-            # But here we have logic: Document -> Segment -> Chunk (via splitting)
-            # The User wants Doc -> Chunk.
-            # So if we map Segment -> Chunk directly, we skip splitting?
-            # Or does "Chunk" imply the result of splitting?
-            # For now, let's assume the Schema "Chunk" corresponds to the split outputs 
-            # OR if source_type="chunk", it's the leaf node.
-            
-        segment_label = "SEGMENT"
-        if schema and "Segment" in schema.nodes:
-             segment_label = schema.nodes["Segment"].label
+        # Node Labels
+        segment_label = schema.nodes.get("Segment", {}).label if schema else "SEGMENT"
+        chunk_label = schema.nodes.get("Chunk", {}).label if schema else "CHUNK"
         
-        # Set name field: first 20 chars of content
+        # 1. Add Segment Node
+        # ID: DOC_ID + _S + Index
+        segment_node_id = f"{doc_id}_S{segment_index}"
+        
         segment_name = segment.content[:20].strip() if segment.content else f"Segment {segment_index}"
         if len(segment.content) > 20:
             segment_name += "..."
+
+        deps.graph.add_node(segment_node_id,
+                          node_type=segment_label,
+                          graph_type="lexical_graph",
+                          content=segment.content,
+                          line_number=segment.line_number,
+                          name=segment_name,
+                          **segment.metadata)
         
-        # If schema simplifies Doc -> Chunk, we might want to skip the intermediate SEGMENT node
-        # But for now, let's keep the structure but rename if needed.
-        # If schema doesn't define "Segment", maybe we treat this node strictly as a holder?
+        # 2. Connect Doc -> Segment
+        deps.graph.add_edge(doc_id, segment_node_id, label="HAS_SEGMENT", graph_type="lexical_graph")
         
-        # Let's map Segment -> Chunk if that's what's requested?
-        # The user said: "The Doc, Chunk, Entity, Topic and Subtopic Nodes must not change."
-        # This implies NO "Segment" node in the final graph?
-        # If so, we should skip adding the SEGMENT node if it's not in schema?
-        # But we need a parent for the chunks?
-        
-        # Heuristic: If schema has "Chunk" but not "Segment", we might treat the split chunks as the direct children of Doc.
-        # Let's preserve the existing logic but use schema labels where they match.
-        
-        # For this specifc request, "Chunk" seems to be the leaf.
-        # Let's assume we proceed to splitting.
-        
-        # Split text (Lexical Chunking)
+        # 3. Chunking (Lexical Splitting)
         try:
             chunks = await process_document_splitting(segment.content, config)
             
             for i, chunk_text in enumerate(chunks):
                 # ID generation
-                chunk_id = f"{doc_id}_C{segment_index}_{i}"
+                chunk_id = f"{segment_node_id}_C{i}"
                 
                 chunk_name = chunk_text[:20].strip() if chunk_text else f"Chunk {i}"
                 if len(chunk_text) > 20:
                     chunk_name += "..."
                 
+                # 4. Add Chunk Node
                 deps.graph.add_node(chunk_id,
                                   node_type=chunk_label,
                                   graph_type="lexical_graph",
@@ -90,13 +76,10 @@ async def process_single_segment(
                                   length=len(chunk_text),
                                   initial_entities=[],
                                   llama_metadata={}, 
-                                  name=chunk_name,
-                                  # Add attributes from segment metadata directly to Chunk if skipping segment node
-                                  **segment.metadata)
+                                  name=chunk_name)
                 
-                # Edge: DOC -> CHUNK (Directly, skipping Segment if not needed?)
-                # If schema says Doc -> Chunk, we link Doc -> Chunk
-                deps.graph.add_edge(doc_id, chunk_id, label="HAS_CHUNK", graph_type="lexical_graph")
+                # 5. Connect Segment -> Chunk
+                deps.graph.add_edge(segment_node_id, chunk_id, label="HAS_CHUNK", graph_type="lexical_graph")
                 
                 deps.extraction_tasks.append(ChunkExtractionTask(
                     chunk_id=chunk_id,
@@ -165,13 +148,18 @@ async def process_single_document_lexical(deps: PipelineContext, filename: str, 
              parser = LifeLogParser()
         else:
              from graphgen.utils.parsers.custom import RegexParser
-             # Use a regex that never matches to treat whole file as one segment
-             parser = RegexParser(segment_splitter="(?!)", attributes_map={})
+             # Use a regex that never matches to treat whole file as one segment?
+             # NO: User requirement: "each new line is a segment"
+             # So we should use a LineParser or configure RegexParser to split on newlines.
+             # Or simply read lines here as we do in iterative_loader?
+             # Since builder.py might be used differently, let's implement the line reading logic directly here 
+             # OR ensure the parser does line splitting.
+             # The existing RegexParser splits by `segment_splitter`.
+             # Let's override to split by newline "\n".
+             parser = RegexParser(segment_splitter="\n", attributes_map={})
     
-    # Determine Node Labels from Schema
-    doc_label = "DAY" 
-    if schema and "Doc" in schema.nodes:
-        doc_label = schema.nodes["Doc"].label
+    # Node Labels
+    doc_label = schema.nodes.get("Doc", {}).label if schema else "DOC"
         
     try:
         file_path = os.path.join(input_dir, filename)
@@ -181,47 +169,54 @@ async def process_single_document_lexical(deps: PipelineContext, filename: str, 
         logger.error(f"Error reading {filename}: {str(e)}")
         return {"error": f"Error reading {filename}: {str(e)}", "segments_added": 0, "chunks_added": 0}
 
-    # Try to extract date from filename first
-    doc_date_str = parser.extract_date(filename)
-    
-    # Fallback to content-based extraction
-    if not doc_date_str:
-        doc_date_str = parser.extract_date_from_content(text)
+    # No date extraction by default as requested.
+    doc_date_str = None
         
-    if not doc_date_str:
-        logger.warning(f"Could not extract date from {filename}, using today's date")
-        doc_date_str = datetime.now().strftime("%Y-%m-%d")
-        
-    doc_date_obj = datetime.strptime(doc_date_str, "%Y-%m-%d").date()
-    
     # Create Document Node ID
-    # Use filename as ID base if possible for uniformity, else use date (legacy)
-    if doc_label == "Doc":
-        # Matches user request
-        doc_id = f"DOC_{filename}"
-    else:
-        doc_id = f"{doc_label}_{doc_date_str}"
+    doc_id = f"DOC_{filename}"
     
     try:
         logger.info(f"Processing document {filename} ({len(text)} chars)")
         
-        # Add Document/Day node if not exists
+        # Add Document Node
         if not deps.graph.has_node(doc_id):
             deps.graph.add_node(doc_id, 
                                node_type=doc_label, 
                                graph_type="lexical_graph",
                                date=doc_date_str,
-                               name=filename, # Name should appear as filename for Doc
+                               name=filename, 
                                segment_count=0)
         
-        # Parse segments
-        segments = parser.parse(text, filename, doc_date_obj)
+        # Parse segments (Lines)
+        # Re-using parser concept, but ensuring it yields lines.
+        # If RegexParser(segment_splitter="\n") works, we use it. 
+        # But `parser.parse` might expect something else.
+        # Let's simplify and just split text by lines manually if it's the default case.
+        
+        if isinstance(parser, LifeLogParser):
+            segments = parser.parse(text, filename, None)
+        else:
+            # Default line-based segmentation
+            lines = text.splitlines()
+            segments = []
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line: continue
+                # We reuse SegmentData
+                segments.append(SegmentData(
+                    segment_id=f"{doc_id}_raw_{i}", # temp ID, redefined in add_segments
+                    content=line,
+                    line_number=i,
+                    date=None,
+                    metadata={}
+                ))
         
         segments_result = await add_segments_to_graph(deps, segments, doc_id, config, schema=schema)
         
         # Update segment count
-        deps.graph.nodes[doc_id]['segment_count'] = (deps.graph.nodes[doc_id].get('segment_count', 0) + 
-                                                   segments_result.get("segments_count", 0))
+        if deps.graph.has_node(doc_id):
+             deps.graph.nodes[doc_id]['segment_count'] = (deps.graph.nodes[doc_id].get('segment_count', 0) + 
+                                                    segments_result.get("segments_count", 0))
         
         return {
             "day_id": doc_id,

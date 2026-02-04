@@ -1,30 +1,24 @@
 # GraphGen Configuration
 
 # Test Mode Configuration
-# Set max_documents to limit the number of documents processed (0 = process all)
 test_mode:
   enabled: true
-  max_documents: 2 # 0 = no limit, process all documents
+  max_documents: 1
 
 # Infrastructure & Integration
 infra:
-  graph_db_type: "neo4j" # options: "falkordb", "neo4j"
-
-# FalkorDB - Hybrid Graph Database
+  graph_db_type: "neo4j"
   falkordb_host: "falkordb"
   falkordb_port: 6379
   postgres_host: "pgvector"
   postgres_port: 5432
-
-# Neo4j - Graph Database
   neo4j_host: "neo4j"
   neo4j_port: 7687
   neo4j_user: "neo4j"
   neo4j_password: "password"
-
   input_dir: "/app/input/txt/translated"
   output_dir: "/app/output"
-  clean_start: true # options: true, false (wipe DB before run)
+  clean_start: true
 
 # LLM Configuration
 llm:
@@ -37,80 +31,43 @@ llm:
 extraction:
   chunk_size: 1500
   chunk_overlap: 200
-  backend: "gliner" # options: "gliner", "spacy", "llm"
-  gliner_model: "urchade/gliner_medium-v2.1"
-  device: "cuda" # options: "auto", "cuda", "cpu"
-  use_onnx: false # Set to true to leverage onnxruntime-gpu if available
-  entity_labels: ["Person", "Organization", "Location", "Policy", "Event", "Concept"] # Base labels (merged with ontology if enabled)
-  # Ontology-based label extraction
-  # When enabled, extracts entity labels from RDF/OWL ontology files
+  backend: "gliner"
+  gliner_model: "urchade/gliner_large-v2"
+  device: "cuda"
+  use_onnx: false
+  hierarchy_levels:
+    - "COMMUNITY"
+    - "SUBCOMMUNITY"
+  entity_labels: ["Person", "Organization", "Location", "Policy", "Event", "Concept"]
   ontology:
-    enabled: true # Set to true to extract labels from RDF ontology
-    ontology_dir: "/app/input/ontology/cdm-4.13.2"  # Directory containing RDF files
-    namespace_filter: null  # Filter to specific namespace, e.g., "http://publications.europa.eu/ontology/cdm#"
-    merge_with_manual: true  # true = merge with gliner_labels, false = replace
-    top_level_only: true     # Recommended: Only extract high-level classes
-    min_subclasses: 1        # Recommended: Only extract classes that have children
-    include_local_names: true  # Use URI local names as fallback when no rdfs:label
-  
+    enabled: true
+    ontology_dir: "/app/input/ontology/cdm-4.13.2"
+    namespace_filter: null
+    merge_with_manual: true
+    top_level_only: true
+    min_subclasses: 1
+    include_local_names: true
   file_pattern: "*.txt"
 
-# Graph Schema Definition
-schema:
-  nodes:
-    Doc:
-      label: "DOCUMENT"
-      source_type: "document"
-      attributes: ["filename", "date"]
-    Chunk:
-      label: "CHUNK"
-      source_type: "chunk"
-      attributes: ["text", "speaker", "order"]
-    Entity:
-      label: "ENTITY"
-      source_type: "derived"
-      attributes: ["name", "type"]
-    Topic:
-      label: "TOPIC"
-      source_type: "derived"
-      attributes: ["title", "keywords"]
+# Graph Schema is hardcoded in graphgen/config/schema.py
 
-  edges:
-    - source_label: "DOCUMENT"
-      target_label: "CHUNK"
-      relation_type: "HAS_CHUNK"
-      is_hierarchical: true
-    - source_label: "CHUNK"
-      target_label: "ENTITY"
-      relation_type: "MENTIONS"
-      is_hierarchical: false
-    - source_label: "DOCUMENT"
-      target_label: "TOPIC"
-      relation_type: "HAS_TOPIC"
-
-# Knowledge Graph Embeddings (PyKeen)
-# When enabled, trains KGE on entity-relation graph and uses embeddings as edge weights for Leiden
 kge:
-  enabled: true  # Toggle KGE training and weighted communities
-  model: "RGCN"  # PyKeen model type
+  enabled: true
+  model: "RGCN"
   embedding_dim: 128
   learning_rate: 0.01
   num_epochs: 50
   early_stopping_patience: 5
 
-# Community Detection Settings
-# Optimized Leiden algorithm configuration
 community:
-  resolutions: [0.5, 0.75, 1.0, 1.25, 1.5]
-  n_iterations: 10 # Number of iterations for each resolution
-  min_community_size: 3 # Merge communities smaller than this
+  resolutions: [0.5] # Reduced for speed
+  n_iterations: 2 # Reduced for speed
+  min_community_size: 3
   seed: 42
 
-# Statistical Analysis
-# Tests whether community/topic embeddings show clear separation
-analysis:
-  topic_separation_test: true  # Enable/disable statistical tests
-  output_file: "topic_separation_stats.json"  # Output filename in output_dir
-  hierarchy_levels:  # Levels to analyze
-    - "COMMUNITY"
-    - "SUBCOMMUNITY"
+# Iterative Experiment Configuration - Smoke Test
+iterative:
+  enabled: true
+  batch_size: 2
+  iterations: 1 
+  random_seed: 42

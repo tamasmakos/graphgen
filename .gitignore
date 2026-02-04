@@ -16,5 +16,3 @@ tests
 # Docker artifacts
 .docker/
 .agent
-output
-thesis

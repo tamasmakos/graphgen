@@ -92,14 +92,29 @@ class IterativeOrchestrator:
             generate_rag_embeddings(ctx.graph, node_types=['ENTITY_CONCEPT'])
             resolve_entities_semantically(ctx.graph, similarity_threshold=self.settings.processing.similarity_threshold)
             
-            # 5. Community Detection
+            # 5. KGE & Edge Weighting (New)
+            if self.settings.kge.enabled:
+                from graphgen.pipeline.embeddings.kge import (
+                    train_global_kge, 
+                    compute_edge_weights_from_kge, 
+                    store_embeddings_in_graph
+                )
+                
+                logger.info("Training KGE model for community detection...")
+                kge_embeddings = train_global_kge(ctx.graph, self.settings.kge)
+                
+                if kge_embeddings:
+                    store_embeddings_in_graph(ctx.graph, kge_embeddings)
+                    compute_edge_weights_from_kge(ctx.graph, kge_embeddings)
+            
+            # 6. Community Detection
             # Note: We re-run detection on the FULL graph every iteration
             detector = CommunityDetector(self.settings.community)
             comm_results = detector.detect_communities(ctx.graph)
             modularity = comm_results.get('modularity', 0.0)
             communities = comm_results['assignments']
             
-            # 6. Summarization
+            # 7. Summarization
             # Detect subcommunities
             subcommunities = detector.detect_subcommunities_leiden(ctx.graph, communities)
             add_enhanced_community_attributes_to_graph(ctx.graph, communities, subcommunities)
@@ -116,7 +131,7 @@ class IterativeOrchestrator:
             # We need `generate_rag_embeddings` for TOPIC nodes after summary generation.
             generate_rag_embeddings(ctx.graph, node_types=['TOPIC', 'SUBTOPIC'])
 
-            # 7. Topic Analysis (Separation)
+            # 8. Topic Analysis (Separation)
             report_path = f"{self.settings.infra.output_dir}/iteration_{i}_report.json"
             report = generate_topic_separation_report(ctx.graph, report_path, self.settings.analysis)
             
@@ -147,3 +162,20 @@ class IterativeOrchestrator:
             logger.info(f"Experiment complete. Results saved to {output_csv}")
         except Exception as e:
             logger.error(f"Failed to save CSV: {e}")
+
+        # Final Upload
+        if self.uploader:
+             db_type = self.settings.infra.graph_db_type
+             logger.info(f"Uploading final iterative graph to {db_type}...")
+             try:
+                 if self.uploader.connect():
+                     # We use clean_start from settings. 
+                     # Since ctx.graph is cumulative, we can wipe and replace or just merge.
+                     # Wiping ensures consistency with the in-memory graph.
+                     self.uploader.upload(ctx.graph, clean_database=self.settings.infra.clean_start)
+                     self.uploader.close()
+                     logger.info("Upload complete.")
+                 else:
+                     logger.error("Failed to connect to graph database for upload.")
+             except Exception as e:
+                 logger.error(f"Upload failed: {e}")
