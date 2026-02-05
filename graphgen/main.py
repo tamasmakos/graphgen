@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 # Load env variables
 load_dotenv()
 
-async def main():
+async def run_pipeline():
     try:
         logger.info("Initializing GraphGen Pipeline...")
         settings = PipelineSettings.load() # loads from config.yaml and .env
@@ -78,5 +78,9 @@ async def main():
         logger.critical(f"Pipeline failed: {e}", exc_info=True)
         sys.exit(1)
 
+def main():
+    """Entry point for the console script."""
+    asyncio.run(run_pipeline())
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

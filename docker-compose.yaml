@@ -90,37 +90,36 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [ gpu ]
-
   # --- Application Services ---
-  graphgen:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: python -m graphgen.main
-    environment:
-      - FALKORDB_HOST=falkordb
-      - POSTGRES_HOST=pgvector
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - PYTHONPATH=/app
-    ports:
-      - "8020:8000" # Host:Container
-    volumes:
-      - ./input:/app/input
-      - ./output:/app/output
-      - ./graphgen:/app/graphgen
-    depends_on:
-      falkordb:
-        condition: service_healthy
-      pgvector:
-        condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [ gpu ]
+  # graphgen:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   command: python -m graphgen.main
+  #   environment:
+  #     - FALKORDB_HOST=falkordb
+  #     - POSTGRES_HOST=pgvector
+  #     - GROQ_API_KEY=${GROQ_API_KEY}
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
+  #     - PYTHONPATH=/app
+  #   ports:
+  #     - "8020:8000" # Host:Container
+  #   volumes:
+  #     - ./input:/app/input
+  #     - ./output:/app/output
+  #     - ./graphgen:/app/graphgen
+  #   depends_on:
+  #     falkordb:
+  #       condition: service_healthy
+  #     pgvector:
+  #       condition: service_healthy
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [ gpu ]
 
 volumes:
   falkordb_data:

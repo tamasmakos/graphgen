@@ -143,13 +143,73 @@ async def extract_relations_with_llm_async(
         logger.error(f"Extraction failed: {str(e)}")
         return [], []
 
+
+async def _extract_entities_for_chunk(
+    text: str, 
+    config: Dict[str, Any],
+    labels: List[str]
+) -> List[Dict[str, Any]]:
+    """Run NER (GLiNER or Spacy) for a single chunk."""
+    extraction_config = config.get('extraction', {})
+    if hasattr(extraction_config, 'model_dump'):
+        extraction_config = extraction_config.model_dump()
+        
+    extraction_backend = extraction_config.get('backend', 'gliner')
+    
+    if extraction_backend == 'spacy':
+        try:
+            spacy_model_name = extraction_config.get('spacy_model', 'en_core_web_lg')
+            nlp = get_spacy_model(spacy_model_name)
+            if nlp:
+                # Run spacy in thread to avoid blocking loop
+                doc = await asyncio.to_thread(nlp, text)
+                return [{
+                    "text": ent.text,
+                    "label": ent.label_
+                } for ent in doc.ents]
+        except Exception as e:
+            logger.error(f"Spacy extraction failed for chunk: {e}")
+            return []
+            
+    else:
+        # GLiNER Default
+        try:
+            model = get_gliner_model(config)
+            if model:
+                # Split sentences for better GLiNER performance on long text
+                sentences = split_sentences(text)
+                if not sentences:
+                    sentences = [text]
+                
+                # Run prediction in thread
+                # Note: GLiNER models are usually not thread-safe if using same CUDA stream, 
+                # but valid for concurrent CPU or serialized GPU calls if lock handled by torch/model?
+                # Ideally we want this to be concurrent. standard batch_predict_entities might be synchronous.
+                predict_func = functools.partial(
+                    model.batch_predict_entities, 
+                    sentences, 
+                    labels, 
+                    threshold=0.5
+                )
+                
+                predictions = await asyncio.to_thread(predict_func)
+                # predictions is list of list of dicts
+                flat_predictions = [item for sublist in predictions for item in sublist]
+                return flat_predictions
+                
+        except Exception as e:
+            logger.error(f"GLiNER extraction failed for chunk: {e}")
+            return []
+
+    return []
+
 async def process_extraction_task(
     deps: PipelineContext,
     task: ChunkExtractionTask,
     semaphore: asyncio.Semaphore,
     extractor: BaseExtractor,
-    precomputed_gliner_entities: List[Dict[str, Any]] = None,
-    ontology_labels: List[str] = None
+    config: Dict[str, Any],
+    ontology_labels: List[str]
 ) -> Dict[str, Any]:
     """Process a single chunk extraction task"""
     async with semaphore:
@@ -157,8 +217,9 @@ async def process_extraction_task(
         logger.info(f"      🚀 Starting {task.chunk_id}")
         
         try:
-            # 1. Use precomputed GLiNER/Spacy entities or fallback to empty
-            gliner_entities = precomputed_gliner_entities or []
+            # 1. Run NER for this chunk (GLiNER/Spacy)
+            # This is now done in parallel with other chunks' NER/LLM steps
+            gliner_entities = await _extract_entities_for_chunk(task.chunk_text, config, ontology_labels)
             
             # 2. Prepare allowed nodes/types for LLM (Gatekeeper Logic)
             # Find which ontology labels were actually discovered in this chunk
@@ -169,22 +230,15 @@ async def process_extraction_task(
                     found_labels.add(label)
                     
             # THE ONTOLOGY LABELS are filtered to only those found in this chunk
-            # This makes the LLM extraction much more focused and accurate
-            # This makes the LLM extraction much more focused and accurate
             node_labels = list(found_labels)
             
             if not node_labels:
-                 logger.info(f"Chunk {task.chunk_id}: Found labels: [] (GLiNER raw: {gliner_entities})")
+                 logger.info(f"Chunk {task.chunk_id}: Found labels: []")
             else:
                  logger.info(f"Chunk {task.chunk_id}: Found labels: {node_labels}")
             
-            # Fallback: if GLiNER found nothing, we might want to allow 
-            # the full set or a default set, but per user request, we focus on findings.
-            # To avoid total failure, let's include 'Concept' or basic labels if none found
+            # Fallback
             if not node_labels and ontology_labels:
-                 # Check if we should allow a "safe subset" or the full set when no hits
-                 # For now, let's use the full set as fallback to not miss entities,
-                 # but logged as a weak hit
                  node_labels = ontology_labels
                  logger.debug(f"Chunk {task.chunk_id}: No labels found by NER, using full ontology set as fallback")
             
@@ -200,8 +254,6 @@ async def process_extraction_task(
             discovered_entities = list(set(discovered_entities))
             
             # Run LLM Relation Extraction
-            # We pass ONLY FOUND LABELS as 'abstract_concepts' (allowed node types)
-            # We pass discovered_entities as 'entities' for guidance
             raw_relations, raw_nodes = await extract_relations_with_llm_async(
                 text=task.chunk_text,
                 extractor=extractor,
@@ -216,7 +268,7 @@ async def process_extraction_task(
                     'relations': raw_relations,
                     'nodes': raw_nodes
                 },
-                'gliner_entities': gliner_entities  # Store GLiNER predictions
+                'gliner_entities': gliner_entities
             }
             deps.graph.nodes[task.chunk_id].update(chunk_data)
             
@@ -230,89 +282,6 @@ async def process_extraction_task(
         except Exception as e:
             logger.error(f"      ❌ Failed {task.chunk_id}: {str(e)}", exc_info=True)
             return {"success": False, "error": str(e), "chunk_id": task.chunk_id}
-
-async def _generate_entity_hints(
-    tasks: List[ChunkExtractionTask], 
-    config: Dict[str, Any]
-) -> Tuple[Dict[str, List[Dict[str, str]]], List[str]]:
-    """Generate entity hints using GLiNER or Spacy, and resolve ontology labels."""
-    extraction_config = config.get('extraction', {})
-    if hasattr(extraction_config, 'model_dump'):
-        extraction_config = extraction_config.model_dump()
-        
-    extraction_backend = extraction_config.get('backend', 'gliner')
-    results_map = {}
-    
-    # Resolve ontology labels (used by all backends for consistency)
-    from graphgen.utils.labels import resolve_entity_labels
-    labels = resolve_entity_labels(extraction_config)
-    logger.info(f"Using {len(labels)} entity labels for extraction pipeline")
-
-    if extraction_backend == 'spacy':
-        # --- SPACY Extraction ---
-        logger.info(f"Step 2.1: Bulk Spacy Extraction for {len(tasks)} chunks...")
-        try:
-            spacy_model_name = extraction_config.get('spacy_model', 'en_core_web_lg')
-            nlp = get_spacy_model(spacy_model_name)
-            
-            if nlp:
-                texts = [task.chunk_text for task in tasks]
-                docs = list(nlp.pipe(texts))
-                
-                for task, doc in zip(tasks, docs):
-                    extracted = []
-                    for ent in doc.ents:
-                        # Map Spacy labels to ontology labels if there's a match/similarity (basic for now)
-                        # Or just pass the text as hint
-                        extracted.append({
-                            "text": ent.text,
-                            "label": ent.label_ # Spacy's original label
-                        })
-                    results_map[task.chunk_id] = extracted
-                
-                logger.info(f"Bulk Spacy complete. Extracted entities for {len(results_map)} chunks.")
-        
-        except Exception as e:
-             logger.error(f"Bulk Spacy extraction failed: {e}", exc_info=True)
-             
-    else:
-        # --- GLiNER Extraction (Default) ---
-        logger.info(f"Step 2.1: Bulk GLiNER Pass for {len(tasks)} chunks...")
-        try:
-            model = get_gliner_model(config)
-            if model:
-                all_sentences = []
-                sentence_to_task_map = []
-                
-                for task in tasks:
-                    sents = split_sentences(task.chunk_text)
-                    if not sents:
-                        sents = [task.chunk_text]
-                    all_sentences.extend(sents)
-                    sentence_to_task_map.extend([task.chunk_id] * len(sents))
-                
-                if all_sentences:
-                    predict_func = functools.partial(
-                        model.batch_predict_entities, 
-                        all_sentences, 
-                        labels, 
-                        threshold=0.5
-                    )
-                    all_predictions = await asyncio.to_thread(predict_func)
-                    
-                    for chunk_id, preds in zip(sentence_to_task_map, all_predictions):
-                        if chunk_id not in results_map:
-                            results_map[chunk_id] = []
-                        results_map[chunk_id].extend(preds)
-                    
-                    total_extracted = sum(len(x) for x in results_map.values())
-                    logger.info(f"Bulk GLiNER complete. Extracted {total_extracted} entities for {len(results_map)} chunks. Labels used: {labels[:10]}...")
-                    if total_extracted == 0:
-                         logger.warning("GLiNER found NO entities. Check labels or model.")
-        except Exception as e:
-            logger.error(f"Bulk GLiNER extraction failed: {e}")
-
-    return results_map, labels
 
 async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str, Any], extractor: BaseExtractor = None) -> Dict[str, Any]:
     """Phase 2: Parallel entity/relation extraction"""
@@ -337,8 +306,22 @@ async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str
         
     logger.info(f"Using {extractor.__class__.__name__} for relation extraction")
     
-    # Generate Entity Hints and resolve ontology labels
-    gliner_results_map, ontology_labels = await _generate_entity_hints(unique_tasks, config)
+    # Resolve ontology labels ONCE
+    extraction_cfg = config.get('extraction', {})
+    if hasattr(extraction_cfg, 'model_dump'):
+        extraction_cfg = extraction_cfg.model_dump()
+        
+    from graphgen.utils.labels import resolve_entity_labels
+    labels = resolve_entity_labels(extraction_cfg)
+    logger.info(f"Using {len(labels)} entity labels for extraction pipeline. Processing {len(unique_tasks)} chunks in parallel...")
+
+    # Preload NER model to prevent race conditions in parallel threads
+    extraction_backend = extraction_cfg.get('backend', 'gliner')
+    if extraction_backend == 'spacy':
+        spacy_model_name = extraction_cfg.get('spacy_model', 'en_core_web_lg')
+        get_spacy_model(spacy_model_name)
+    else:
+        get_gliner_model(config)
 
     try:
         # Use max_concurrent from config for controlled parallelization
@@ -350,9 +333,10 @@ async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str
             task, 
             semaphore, 
             extractor, 
-            gliner_results_map.get(task.chunk_id, []),
-            ontology_labels # Pass labels to guiding LLM and classification
+            config,
+            labels
         ) for task in unique_tasks]
+        
         results = await asyncio.gather(*tasks)
         
         successful = sum(1 for r in results if r.get("success"))

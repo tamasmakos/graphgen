@@ -1,0 +1,78 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+.eggs
+dist
+build
+*.egg
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Virtual environments
+venv
+.venv
+env
+.env
+*.env
+
+# IDE & Editor configs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Docker
+Dockerfile*
+docker-compose*.yaml
+docker-compose*.yml
+.docker
+
+# Output & data directories (large files!)
+output
+input
+logs
+*.log
+data
+datasets
+
+# Node modules (if any npm projects)
+node_modules
+
+# Jupyter notebooks (checkpoints)
+.ipynb_checkpoints
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs
+*.md
+!requirements.txt
+
+# Tests (not needed in prod image)
+tests
+*_test.py
+test_*.py
+
+# Misc large files
+*.zip
+*.tar.gz
+*.pkl
+*.model
+*.bin
+*.pt
+*.onnx

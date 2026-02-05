@@ -29,8 +29,8 @@ llm:
 
 # Extraction Settings
 extraction:
-  chunk_size: 1500
-  chunk_overlap: 200
+  chunk_size: 512
+  chunk_overlap: 64
   backend: "gliner"
   gliner_model: "urchade/gliner_large-v2"
   device: "cuda"
@@ -65,9 +65,21 @@ community:
   min_community_size: 3
   seed: 42
 
+# Analytics & Visualization
+analytics:
+  enabled: true
+  output_dir: "analytics_reports"
+  kge_comparison:
+    enabled: false # Set to true to run comprehensive model check
+    models: ["TransE", "DistMult"]
+    epochs: 20
+  visualization:
+    interactive: true
+    heatmap: true
+
 # Iterative Experiment Configuration - Smoke Test
 iterative:
   enabled: true
-  batch_size: 2
-  iterations: 1 
+  batch_size: 5
+  iterations: 3
   random_seed: 42

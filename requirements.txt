@@ -17,3 +17,7 @@ neo4j
 pykeen
 rdflib
 gliner[gpu]
+pandas
+seaborn
+matplotlib
+falkordb

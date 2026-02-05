@@ -79,13 +79,19 @@ class TopicSeparationReport:
     pairwise_comparisons: List[PairwiseComparison]
     pca_explained_variance: List[float]
     global_separation: Optional[float]  # Average pairwise cosine distance
+    global_overlap: Optional[float] # Average pairwise cosine similarity
     overall_interpretation: str
 
 
-def compute_global_separation(embeddings: Dict[str, np.ndarray]) -> float:
-    """Compute average pairwise cosine distance between all embeddings."""
+def compute_global_separation(embeddings: Dict[str, np.ndarray]) -> Tuple[float, float]:
+    """
+    Compute average pairwise cosine distance and similarity between all embeddings.
+    
+    Returns:
+        Tuple[float, float]: (average_distance, average_similarity)
+    """
     if len(embeddings) < 2:
-        return 0.0
+        return 0.0, 0.0
     
     try:
         X = np.array(list(embeddings.values()))
@@ -105,11 +111,12 @@ def compute_global_separation(embeddings: Dict[str, np.ndarray]) -> float:
         tri_indices = np.triu_indices(n, k=1)
         if len(tri_indices[0]) > 0:
             avg_dist = np.mean(dist_matrix[tri_indices])
-            return float(avg_dist)
-        return 0.0
+            avg_sim = np.mean(sim_matrix[tri_indices])
+            return float(avg_dist), float(avg_sim)
+        return 0.0, 0.0
     except Exception as e:
         logger.error(f"Global separation calculation failed: {e}")
-        return 0.0
+        return 0.0, 0.0
 
 
 def extract_topic_embeddings(
@@ -722,10 +729,13 @@ def generate_topic_separation_report(
     for level_embs in all_embeddings.values():
         combined_embeddings.update(level_embs)
     
+
+    
     global_separation = 0.0
+    global_overlap = 0.0
     if combined_embeddings:
         pca_variance = compute_pca_variance(combined_embeddings)
-        global_separation = compute_global_separation(combined_embeddings)
+        global_separation, global_overlap = compute_global_separation(combined_embeddings)
     
     # Overall interpretation
     interpretations = []
@@ -745,8 +755,13 @@ def generate_topic_separation_report(
         pairwise_comparisons=pairwise,
         pca_explained_variance=pca_variance,
         global_separation=global_separation,
+        global_overlap=global_overlap,
         overall_interpretation=overall
     )
+    
+    # NOTE: user tip - for high-dimensional embeddings (e.g. OpenAI 1536d), 
+    # consider using UMAP for dimensionality reduction before statistical tests 
+    # if PCA shows instability or "curse of dimensionality" issues.
     
     # Convert to dictionary for JSON serialization
     def to_dict(obj):

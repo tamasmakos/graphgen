@@ -223,12 +223,7 @@ async def collect_community_tasks_async(graph: nx.DiGraph) -> List[Summarization
                                     if str(graph.nodes[entity_pred].get('node_type', '')).upper() in ['CHUNK', 'TEXTCHUNK']:
                                         chunk_ids.append(entity_pred)
             
-            # If still no chunks, use fallback: any chunks in graph
-            if not chunk_ids:
-                all_chunks = [n for n, d in graph.nodes(data=True) if str(d.get('node_type', '')).upper() in ['CHUNK', 'TEXTCHUNK']]
-                if all_chunks:
-                    chunk_ids = all_chunks[:10] # Increased slightly
-                    logger.info(f"Using fallback chunks for topic {community_id}: {len(chunk_ids)} chunks")
+
             
             if not chunk_ids:
                 logger.warning(f"No chunks found for topic {community_id}, skipping")

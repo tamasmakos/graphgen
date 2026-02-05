@@ -211,16 +211,34 @@ class KGESettings(BaseSettings):
     )
 
 
-class AnalysisSettings(BaseSettings):
+class AnalyticsSettings(BaseSettings):
     """
-    Statistical Analysis Configuration.
+    Advanced Analytics & Visualization Configuration.
+    Controls the generation of academic-quality reports, interactive graphs,
+    and statistical evaluations (modularity, KGE models).
+    """
+    enabled: bool = Field(False, alias="ANALYTICS_ENABLED")
+    output_dir: str = "analytics_reports"
     
-    Controls the topic/community embedding separation tests that verify
-    whether communities form distinct semantic clusters.
-    """
-    topic_separation_test: bool = True  # Enable/disable statistical tests
-    output_file: str = "topic_separation_stats.json"  # Output filename
-    hierarchy_levels: List[str] = ["COMMUNITY", "SUBCOMMUNITY"]  # Levels to analyze
+    # Topic Separation & Modularity
+    topic_separation_test: bool = True  # Legacy flag, kept for backward compatibility logic if needed
+    
+    # KGE Comparison
+    kge_comparison: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "enabled": False, 
+            "models": ["TransE", "DistMult"], 
+            "epochs": 50
+        }
+    )
+    
+    # Visualization
+    visualization: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "interactive": True, 
+            "heatmap": True
+        }
+    )
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -271,7 +289,8 @@ class PipelineSettings(BaseSettings):
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     kge: KGESettings = Field(default_factory=KGESettings)
-    analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
+    analysis: AnalyticsSettings = Field(default_factory=AnalyticsSettings) # Alias for backward compatibility or direct usage
+    analytics: AnalyticsSettings = Field(default_factory=AnalyticsSettings)
     community: CommunitySettings = Field(default_factory=CommunitySettings)
     test_mode: TestModeSettings = Field(default_factory=TestModeSettings)
     iterative: IterativeSettings = Field(default_factory=IterativeSettings)

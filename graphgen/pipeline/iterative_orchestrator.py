@@ -111,6 +111,13 @@ class IterativeOrchestrator:
             # Note: We re-run detection on the FULL graph every iteration
             detector = CommunityDetector(self.settings.community)
             comm_results = detector.detect_communities(ctx.graph)
+            
+            # --- VISUALIZATION (New) ---
+            if self.settings.kge.enabled:
+                from graphgen.pipeline.visualization.kge_plot import plot_kge_communities
+                plot_path = f"iteration_{i+1}_kge_plot.png"
+                plot_kge_communities(ctx.graph, comm_results['assignments'], plot_path)
+
             modularity = comm_results.get('modularity', 0.0)
             communities = comm_results['assignments']
             
@@ -131,23 +138,37 @@ class IterativeOrchestrator:
             # We need `generate_rag_embeddings` for TOPIC nodes after summary generation.
             generate_rag_embeddings(ctx.graph, node_types=['TOPIC', 'SUBTOPIC'])
 
-            # 8. Topic Analysis (Separation)
-            report_path = f"{self.settings.infra.output_dir}/iteration_{i}_report.json"
-            report = generate_topic_separation_report(ctx.graph, report_path, self.settings.analysis)
-            
-            global_separation = report.get('global_separation', 0.0)
+            # 8. Graph Analytics
+            if self.settings.analytics.enabled:
+                 from graphgen.analytics.analyzer import GraphAnalyzer
+                 analyzer = GraphAnalyzer(
+                     config=self.settings.analytics.model_dump(), 
+                     output_base_dir=self.settings.infra.output_dir
+                 )
+                 # Reconstruct communities mapping
+                 communities = comm_results['assignments']
+                 
+                 results = analyzer.run_full_analysis(ctx.graph, communities)
+                 
+                 global_separation = results.get('modularity', 0.0) # Map to relevant metric or store all
+                 topic_overlap = results.get('topic_overlap', 0.0)
+            else:
+                 # Minimal fallback if disabled but loop expects vars?
+                 global_separation = 0.0
+                 topic_overlap = 0.0
             
             result = {
                 'iteration': i + 1,
                 'cumulative_speeches': (i + 1) * self.settings.iterative.batch_size,
                 'modularity': modularity,
                 'topic_separation': global_separation,
+                'topic_overlap': topic_overlap,
                 'nodes': ctx.graph.number_of_nodes(),
                 'edges': ctx.graph.number_of_edges(),
                 'communities': comm_results.get('community_count', 0)
             }
             self.results.append(result)
-            logger.info(f"Iteration {i+1} Stats: Modularity={modularity:.4f}, Separation={global_separation:.4f}")
+            logger.info(f"Iteration {i+1} Stats: Modularity={modularity:.4f}, Separation={global_separation:.4f}, Overlap={topic_overlap:.4f}")
             
             # Optional: Upload intermediate?
             if self.uploader:
@@ -176,6 +197,6 @@ class IterativeOrchestrator:
                      self.uploader.close()
                      logger.info("Upload complete.")
                  else:
-                     logger.error("Failed to connect to graph database for upload.")
+                     logger.warning("Failed to connect to graph database for upload. Continuing without DB upload (output graphs saved locally).")
              except Exception as e:
-                 logger.error(f"Upload failed: {e}")
+                 logger.warning(f"Upload failed: {e}. Continuing without DB upload (output graphs saved locally).")

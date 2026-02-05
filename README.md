@@ -262,3 +262,16 @@ This script checks:
 2. If GLiNER can successfully load onto the CUDA device.
 
 If you see "ERROR: CUDA is not available", double-check your host's NVIDIA driver installation and ensure Docker is allowed to access the GPU.
+
+## Visualization Tools
+
+### Evolution of Modularity vs Topic Overlap
+To analyze how community structure (Modularity) and semantic topic distinctness (Topic Overlap) evolve over iterations, use the provided visualization script:
+
+```bash
+python3 tools/visualize_evolution.py --csv output/iterative_experiment_results.csv --output output/modularity_vs_overlap.png
+```
+
+This generates a dual-axis plot showing:
+- **Modularity (Blue)**: Structural quality of communities (higher is better).
+- **Topic Overlap (Red)**: Semantic similarity between topics (lower is usually better/more distinct).
