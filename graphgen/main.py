@@ -12,7 +12,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from graphgen.config.settings import PipelineSettings
-from graphgen.utils.graphdb.uploader import KnowledgeGraphUploader
+# from graphgen.utils.graphdb.uploader import KnowledgeGraphUploader # Removed
 from graphgen.orchestrator import KnowledgePipeline
 from dotenv import load_dotenv
 
@@ -26,37 +26,15 @@ async def run_pipeline():
         
         logger.info(f"Configuration loaded. Input: {settings.infra.input_dir}, Output: {settings.infra.output_dir}")
         
-        uploader = None
-        if settings.infra.graph_db_type == "neo4j":
-            from graphgen.utils.graphdb.neo4j_adapter import Neo4jGraphUploader
-            logger.info("Initializing Neo4j Backend...")
-            uploader = Neo4jGraphUploader(
-                host=settings.infra.neo4j_host,
-                port=settings.infra.neo4j_port,
-                username=settings.infra.neo4j_user,
-                password=settings.infra.neo4j_password,
-                database="neo4j"
-            )
-        else:
-            logger.info("Initializing FalkorDB Backend...")
-            postgres_config = None
-            if settings.infra.postgres_enabled:
-                postgres_config = {
-                    'enabled': True,
-                    'host': settings.infra.postgres_host,
-                    'port': settings.infra.postgres_port,
-                    'user': settings.infra.postgres_user,
-                    'password': settings.infra.postgres_password,
-                    'database': settings.infra.postgres_db,
-                    'table_name': settings.infra.postgres_table
-                }
-            
-            uploader = KnowledgeGraphUploader(
-                host=settings.infra.falkordb_host,
-                port=settings.infra.falkordb_port,
-                database="kg",
-                postgres_config=postgres_config
-            )
+        from graphgen.utils.graphdb.neo4j_adapter import Neo4jGraphUploader
+        logger.info("Initializing Neo4j Backend...")
+        uploader = Neo4jGraphUploader(
+            host=settings.infra.neo4j_host,
+            port=settings.infra.neo4j_port,
+            username=settings.infra.neo4j_user,
+            password=settings.infra.neo4j_password,
+            database="neo4j"
+        )
             
         # Initialize Extractor
         from graphgen.pipeline.entity_relation.extractors import get_extractor

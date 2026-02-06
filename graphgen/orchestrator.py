@@ -14,14 +14,14 @@ from typing import Dict, Any, List
 
 from graphgen.types import PipelineContext
 from graphgen.config.settings import PipelineSettings
-from graphgen.utils.graphdb.uploader import KnowledgeGraphUploader
+from graphgen.utils.graphdb.neo4j_adapter import Neo4jGraphUploader
 from graphgen.pipeline.lexical_graph_building.builder import build_lexical_graph
 from graphgen.pipeline.entity_relation.extraction import extract_all_entities_relations
 from graphgen.pipeline.entity_relation.extractors import BaseExtractor
 from graphgen.pipeline.graph_cleaning.pruning import prune_graph
 from graphgen.utils.utils import create_output_directory
 from graphgen.utils.schema_utils import save_graph_schema
-from graphgen.utils.health import check_falkordb
+# from graphgen.utils.health import check_falkordb
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class KnowledgePipeline:
     def __init__(
         self, 
         settings: PipelineSettings,
-        uploader: KnowledgeGraphUploader,
+        uploader: Neo4jGraphUploader,
         extractor: Any = None
     ):
         self.settings = settings
@@ -118,19 +118,13 @@ class KnowledgePipeline:
         """Check external dependencies."""
         logger.info("Performing preflight health checks...")
         
-        if self.settings.infra.graph_db_type == "neo4j":
-            # Basic check via uploader connectivity
-            if self.uploader and not self.uploader.connect():
-                 error_msg = f"Preflight check failed: Neo4j is not reachable."
-                 logger.critical(f"{error_msg} Aborting pipeline.")
-                 raise ConnectionError(error_msg)
-            if self.uploader:
-                self.uploader.close() # Close after check
-        else:
-            if not check_falkordb(self.settings.infra.falkordb_host, self.settings.infra.falkordb_port):
-                error_msg = f"Preflight check failed: FalkorDB is not reachable at {self.settings.infra.falkordb_host}:{self.settings.infra.falkordb_port}."
-                logger.critical(f"{error_msg} Aborting pipeline.")
-                raise ConnectionError(error_msg)
+        # Basic check via uploader connectivity
+        if self.uploader and not self.uploader.connect():
+             error_msg = f"Preflight check failed: Neo4j is not reachable."
+             logger.critical(f"{error_msg} Aborting pipeline.")
+             raise ConnectionError(error_msg)
+        if self.uploader:
+            self.uploader.close() # Close after check
 
     async def _step_lexical_graph(self, ctx: PipelineContext, config: Dict[str, Any], schema: Any = None):
         input_dir = self.settings.infra.input_dir

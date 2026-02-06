@@ -18,6 +18,7 @@ from graphgen.pipeline.analysis.topic_separation import generate_topic_separatio
 from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
 from graphgen.config.llm import get_langchain_llm
 from graphgen.config.schema import GraphSchema
+from graphgen.utils.utils import create_output_directory
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ class IterativeOrchestrator:
             return
 
         logger.info(f"Starting Iterative Experiment: {self.settings.iterative.iterations} iterations, batch size {self.settings.iterative.batch_size}")
+
+        # Ensure output directory exists before any file writes
+        create_output_directory(self.settings.infra.output_dir)
 
         # Initialize cumulative graph
         graph = nx.DiGraph() 
@@ -92,8 +96,17 @@ class IterativeOrchestrator:
             generate_rag_embeddings(ctx.graph, node_types=['ENTITY_CONCEPT'])
             resolve_entities_semantically(ctx.graph, similarity_threshold=self.settings.processing.similarity_threshold)
             
+            # Initialize baseline modularity
+            modularity_baseline = 0.0
+
             # 5. KGE & Edge Weighting (New)
             if self.settings.kge.enabled:
+                # Calculate baseline modularity BEFORE KGE edge weighting
+                detector_base = CommunityDetector(self.settings.community)
+                base_results = detector_base.detect_communities(ctx.graph)
+                modularity_baseline = base_results.get('modularity', 0.0)
+                logger.info(f"Baseline Modularity (No KGE): {modularity_baseline:.4f}")
+
                 from graphgen.pipeline.embeddings.kge import (
                     train_global_kge, 
                     compute_edge_weights_from_kge, 
@@ -115,7 +128,7 @@ class IterativeOrchestrator:
             # --- VISUALIZATION (New) ---
             if self.settings.kge.enabled:
                 from graphgen.pipeline.visualization.kge_plot import plot_kge_communities
-                plot_path = f"iteration_{i+1}_kge_plot.png"
+                plot_path = f"{self.settings.infra.output_dir}/iteration_{i+1}_kge_plot.png"
                 plot_kge_communities(ctx.graph, comm_results['assignments'], plot_path)
 
             modularity = comm_results.get('modularity', 0.0)
@@ -139,6 +152,33 @@ class IterativeOrchestrator:
             generate_rag_embeddings(ctx.graph, node_types=['TOPIC', 'SUBTOPIC'])
 
             # 8. Graph Analytics
+            # We explicitly run the topic separation statistical report for every iteration
+            # as this is critical for the hypothesis testing.
+            from graphgen.pipeline.analysis.topic_separation import generate_topic_separation_report
+            
+            stats_report = generate_topic_separation_report(
+                ctx.graph, 
+                f"{self.settings.infra.output_dir}/iteration_{i+1}_report.json",
+                self.settings.analytics
+            )
+            
+            # Extract metrics for CSV
+            global_separation = stats_report.get('global_separation', 0.0) or 0.0
+            global_overlap = stats_report.get('global_overlap', 0.0) or 0.0
+            
+            # Extract silhouette scores if available
+            entity_sil = 0.0
+            if stats_report.get('entity_level'):
+                 entity_sil = stats_report['entity_level'].get('silhouette_score', 0.0) or 0.0
+                 
+            community_sil = 0.0
+            if stats_report.get('community_level'):
+                 community_sil = stats_report['community_level'].get('silhouette_score', 0.0) or 0.0
+                 
+            subcommunity_sil = 0.0
+            if stats_report.get('subcommunity_level'):
+                 subcommunity_sil = stats_report['subcommunity_level'].get('silhouette_score', 0.0) or 0.0
+
             if self.settings.analytics.enabled:
                  from graphgen.analytics.analyzer import GraphAnalyzer
                  analyzer = GraphAnalyzer(
@@ -146,29 +186,28 @@ class IterativeOrchestrator:
                      output_base_dir=self.settings.infra.output_dir
                  )
                  # Reconstruct communities mapping
-                 communities = comm_results['assignments']
+                 communities_map = comm_results['assignments']
                  
-                 results = analyzer.run_full_analysis(ctx.graph, communities)
-                 
-                 global_separation = results.get('modularity', 0.0) # Map to relevant metric or store all
-                 topic_overlap = results.get('topic_overlap', 0.0)
-            else:
-                 # Minimal fallback if disabled but loop expects vars?
-                 global_separation = 0.0
-                 topic_overlap = 0.0
+                 # This runs other analytics (heatmap, KGE comparison if enabled)
+                 # We don't overwrite our stats with this
+                 _ = analyzer.run_full_analysis(ctx.graph, communities_map)
             
             result = {
                 'iteration': i + 1,
                 'cumulative_speeches': (i + 1) * self.settings.iterative.batch_size,
                 'modularity': modularity,
+                'modularity_baseline': modularity_baseline,
                 'topic_separation': global_separation,
-                'topic_overlap': topic_overlap,
+                'topic_overlap': global_overlap,
+                'entity_silhouette': entity_sil,
+                'community_silhouette': community_sil,
+                'subcommunity_silhouette': subcommunity_sil,
                 'nodes': ctx.graph.number_of_nodes(),
                 'edges': ctx.graph.number_of_edges(),
                 'communities': comm_results.get('community_count', 0)
             }
             self.results.append(result)
-            logger.info(f"Iteration {i+1} Stats: Modularity={modularity:.4f}, Separation={global_separation:.4f}, Overlap={topic_overlap:.4f}")
+            logger.info(f"Iteration {i+1} Stats: Modularity={modularity:.4f}, Separation={global_separation:.4f}, Silhouette(Ent/Com/Sub)={entity_sil:.3f}/{community_sil:.3f}/{subcommunity_sil:.3f}")
             
             # Optional: Upload intermediate?
             if self.uploader:
@@ -183,6 +222,15 @@ class IterativeOrchestrator:
             logger.info(f"Experiment complete. Results saved to {output_csv}")
         except Exception as e:
             logger.error(f"Failed to save CSV: {e}")
+
+        # Generate thesis-quality plots from accumulated experiment data
+        try:
+            from graphgen.pipeline.visualization.thesis_plots import generate_all_thesis_plots
+            thesis_results = generate_all_thesis_plots(self.settings.infra.output_dir)
+            generated = len([v for v in thesis_results.values() if v])
+            logger.info(f"Generated {generated} thesis plots.")
+        except Exception as e:
+            logger.warning(f"Thesis plot generation failed (non-critical): {e}")
 
         # Final Upload
         if self.uploader:

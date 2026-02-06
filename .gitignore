@@ -16,3 +16,4 @@ tests
 # Docker artifacts
 .docker/
 .agent
+.cursor

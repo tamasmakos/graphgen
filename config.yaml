@@ -8,12 +8,9 @@ test_mode:
 # Infrastructure & Integration
 infra:
   graph_db_type: "neo4j"
-  falkordb_host: "falkordb"
-  falkordb_port: 6379
-  postgres_host: "pgvector"
-  postgres_port: 5432
-  neo4j_host: "neo4j"
-  neo4j_port: 7687
+  # neo4j_host: "neo4j" # Handled via .env (NEO4J_HOST)
+  # neo4j_port: 7687 # Handled via .env (NEO4J_PORT)
+
   neo4j_user: "neo4j"
   neo4j_password: "password"
   input_dir: "/app/input/txt/translated"
@@ -32,7 +29,7 @@ extraction:
   chunk_size: 512
   chunk_overlap: 64
   backend: "gliner"
-  gliner_model: "urchade/gliner_large-v2"
+  gliner_model: "knowledgator/gliner-multitask-large-v0.5"
   device: "cuda"
   use_onnx: false
   hierarchy_levels:
@@ -81,5 +78,5 @@ analytics:
 iterative:
   enabled: true
   batch_size: 5
-  iterations: 3
+  iterations: 2
   random_seed: 42

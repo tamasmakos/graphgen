@@ -181,19 +181,19 @@ async def _extract_entities_for_chunk(
                 if not sentences:
                     sentences = [text]
                 
-                # Run prediction in thread
-                # Note: GLiNER models are usually not thread-safe if using same CUDA stream, 
-                # but valid for concurrent CPU or serialized GPU calls if lock handled by torch/model?
-                # Ideally we want this to be concurrent. standard batch_predict_entities might be synchronous.
+                # Read threshold from config (avoid hardcoding)
+                threshold = extraction_config.get('gliner_threshold', 0.5)
+                
+                # Use the modern inference API (batch_predict_entities is deprecated in GLiNER >= 0.2.x)
                 predict_func = functools.partial(
-                    model.batch_predict_entities, 
+                    model.inference, 
                     sentences, 
                     labels, 
-                    threshold=0.5
+                    threshold=threshold
                 )
                 
                 predictions = await asyncio.to_thread(predict_func)
-                # predictions is list of list of dicts
+                # inference returns List[List[Dict]] -- flatten to single list
                 flat_predictions = [item for sublist in predictions for item in sublist]
                 return flat_predictions
                 

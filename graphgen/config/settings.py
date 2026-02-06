@@ -20,24 +20,13 @@ class InfrastructureSettings(BaseSettings):
     External Integration Settings.
     Crucial for connecting services. Managed via .env / docker-compose.
     """
-    graph_db_type: str = Field("falkordb", alias="GRAPH_DB_TYPE")
+    graph_db_type: str = Field("neo4j", alias="GRAPH_DB_TYPE")
 
     # --- Databases ---
-    falkordb_host: str = Field("falkordb", alias="FALKORDB_HOST")
-    falkordb_port: int = Field(6379, alias="FALKORDB_PORT")
-    
     neo4j_host: str = Field("neo4j", alias="NEO4J_HOST")
     neo4j_port: int = Field(7687, alias="NEO4J_PORT")
     neo4j_user: str = Field("neo4j", alias="NEO4J_USER")
     neo4j_password: str = Field("password", alias="NEO4J_PASSWORD")
-    
-    postgres_host: str = Field("pgvector", alias="POSTGRES_HOST")
-    postgres_port: int = Field(5432, alias="POSTGRES_PORT")
-    postgres_db: str = Field("graphknows", alias="POSTGRES_DB")
-    postgres_user: str = Field("postgres", alias="POSTGRES_USER")
-    postgres_password: str = Field("password", alias="POSTGRES_PASSWORD")
-    postgres_enabled: bool = True
-    postgres_table: str = "hybrid_embeddings"
     
     # --- API Keys ---
     groq_api_key: Optional[SecretStr] = Field(None, alias="GROQ_API_KEY")
@@ -123,7 +112,7 @@ class ExtractionSettings(BaseSettings):
     backend: str = "llm"  # options: "gliner", "spacy", "llm"
     
     # GLiNER Configuration
-    gliner_model: str = "urchade/gliner_medium-v2.1"
+    gliner_model: str = "knowledgator/gliner-multitask-large-v0.5"
     gliner_threshold: float = 0.5
     device: str = "auto" # "auto", "cuda", "cpu"
     use_onnx: bool = False

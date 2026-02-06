@@ -20,4 +20,3 @@ gliner[gpu]
 pandas
 seaborn
 matplotlib
-falkordb

@@ -17,7 +17,7 @@ dependencies = [
     "pydantic-settings",
     "spacy",
     "langchain",
-    "falkordb",
+
     "python-dotenv",
     "pyyaml",
     "groq",

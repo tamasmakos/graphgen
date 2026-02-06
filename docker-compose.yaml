@@ -1,36 +1,5 @@
 services:
   # --- Infrastructure ---
-  falkordb:
-    image: falkordb/falkordb:latest
-    ports:
-      - "6381:6379" # Internal & Local access
-      - "3002:3000" # Dashboard
-    volumes:
-      - falkordb_data:/data
-    restart: always
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  pgvector:
-    image: pgvector/pgvector:pg16
-    ports:
-      - "5436:5432"
-    environment:
-      - POSTGRES_DB=graphknows
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
-    volumes:
-      - pgvector_data:/var/lib/postgresql/data
-    restart: always
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   langfuse-server:
     image: langfuse/langfuse:2
     depends_on:
@@ -80,8 +49,6 @@ services:
       - .:/app
     command: tail -f /dev/null
     depends_on:
-      - falkordb
-      - pgvector
       - neo4j
     deploy:
       resources:
@@ -90,39 +57,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [ gpu ]
-  # --- Application Services ---
-  # graphgen:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   command: python -m graphgen.main
-  #   environment:
-  #     - FALKORDB_HOST=falkordb
-  #     - POSTGRES_HOST=pgvector
-  #     - GROQ_API_KEY=${GROQ_API_KEY}
-  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
-  #     - PYTHONPATH=/app
-  #   ports:
-  #     - "8020:8000" # Host:Container
-  #   volumes:
-  #     - ./input:/app/input
-  #     - ./output:/app/output
-  #     - ./graphgen:/app/graphgen
-  #   depends_on:
-  #     falkordb:
-  #       condition: service_healthy
-  #     pgvector:
-  #       condition: service_healthy
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: 1
-  #             capabilities: [ gpu ]
 
 volumes:
-  falkordb_data:
-  pgvector_data:
   langfuse_data:
   neo4j_data:

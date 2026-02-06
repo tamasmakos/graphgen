@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 import numpy as np
 import networkx as nx
 
@@ -100,6 +101,7 @@ def plot_kge_communities(graph: nx.Graph, partition: dict, output_path: str):
             ax.add_artist(legend1)
         
         plt.tight_layout()
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(output_path)
         plt.close(fig)
         

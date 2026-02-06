@@ -34,6 +34,7 @@ def plot_topic_heatmap(
         sns.heatmap(sim_matrix, xticklabels=labels, yticklabels=labels, cmap="YlOrRd")
         plt.title("Topic Similarity Heatmap")
         plt.tight_layout()
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         plt.savefig(output_path, dpi=300)
         plt.close()
         logger.info(f"Saved heatmap to {output_path}")
@@ -88,6 +89,7 @@ def generate_interactive_explorer(
 
     # Inject custom search javascript
     # This is a bit hacky but standard for adding search to PyVis
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     net.save_graph(output_path)
     
     # Post-process HTML to add search bar

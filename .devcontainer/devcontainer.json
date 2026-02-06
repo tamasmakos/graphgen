@@ -1,20 +1,17 @@
 {
-    "name": "GraphGen Dev Container",
-    "dockerComposeFile": [
-      "../docker-compose.yaml"
-    ],
-    "service": "dev",
-    "workspaceFolder": "/app",
-    "features": {
-        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
-    },
-    "customizations": {
-      "vscode": {
-        "extensions": [
-          "ms-python.python",
-          "ms-azuretools.vscode-docker"
-        ]
-      }
-    },
-    "shutdownAction": "stopCompose"
-  }
+  "name": "GraphGen Dev Container",
+  "dockerComposeFile": [
+    "../docker-compose.yaml"
+  ],
+  "service": "dev",
+  "workspaceFolder": "/app",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "shutdownAction": "stopCompose"
+}

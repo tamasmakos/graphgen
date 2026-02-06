@@ -114,40 +114,54 @@ async def summarize_text_internal(llm: Any, text: str) -> str:
     return "No summary available."
 
 async def find_entities_for_community_async(graph: nx.DiGraph, topic_node_id: str) -> List[str]:
-    """Find entity IDs that belong to a topic"""
+    """Find entity IDs that belong to a topic.
+    
+    Traverses the hierarchy:
+      - Topic <- Subtopic <- Entity  (large communities with subcommunities)
+      - Topic <- Entity              (small communities connected directly)
+    
+    Entity node_type can be ENTITY, ENTITY_CONCEPT, PLACE, or NAMEDENTITY.
+    """
+    ENTITY_TYPES = {'ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY'}
     entity_ids = []
     
-    # Look for entity nodes connected to topic node
-    if graph.has_node(topic_node_id):
-        # Structure is Entity -> Subtopic -> Topic (incoming edges)
-        for pred in graph.predecessors(topic_node_id):
-            node_data = graph.nodes[pred]
-            node_type = str(node_data.get('node_type', '')).upper()
-            
-            # If predecessor is a Subtopic, look for its entities
-            if node_type == 'SUBTOPIC':
-                for sub_pred in graph.predecessors(pred):
-                    sub_node_type = str(graph.nodes[sub_pred].get('node_type', '')).upper()
-                    if sub_node_type in ['ENTITY']:
-                        entity_ids.append(sub_pred)
-                        
-            # If predecessor is directly an Entity
-            elif node_type in ['ENTITY']:
-                entity_ids.append(pred)
+    if not graph.has_node(topic_node_id):
+        return entity_ids
+    
+    # Structure is Entity -> Subtopic -> Topic  OR  Entity -> Topic (incoming edges)
+    for pred in graph.predecessors(topic_node_id):
+        node_data = graph.nodes[pred]
+        node_type = str(node_data.get('node_type', '')).upper()
+        
+        # If predecessor is a Subtopic, look for its entity predecessors
+        if node_type == 'SUBTOPIC':
+            for sub_pred in graph.predecessors(pred):
+                sub_node_type = str(graph.nodes[sub_pred].get('node_type', '')).upper()
+                if sub_node_type in ENTITY_TYPES:
+                    entity_ids.append(sub_pred)
+                    
+        # If predecessor is directly an Entity (small communities without subtopics)
+        elif node_type in ENTITY_TYPES:
+            entity_ids.append(pred)
     
     return entity_ids
 
 async def find_chunks_for_entities_async(graph: nx.DiGraph, entity_ids: List[str]) -> List[str]:
-    """Find chunk IDs connected to the given entity IDs"""
+    """Find chunk IDs connected to the given entity IDs.
+    
+    Traverses: Chunk --[HAS_ENTITY]--> Entity (so Chunk is a predecessor of Entity).
+    Chunk node_type can be CHUNK or TEXTCHUNK depending on schema configuration.
+    """
+    CHUNK_TYPES = {'CHUNK', 'TEXTCHUNK'}
     chunk_ids = set()
     
     for entity_id in entity_ids:
         if graph.has_node(entity_id):
-            # Structure is Chunk -> Entity (HAS_ENTITY)
+            # Structure is Chunk -> Entity (HAS_ENTITY edge direction)
             for pred in graph.predecessors(entity_id):
                 node_data = graph.nodes[pred]
                 node_type = str(node_data.get('node_type', '')).upper()
-                if node_type in ['CHUNK']:
+                if node_type in CHUNK_TYPES:
                     chunk_ids.add(pred)
     
     return list(chunk_ids)
@@ -204,26 +218,10 @@ async def collect_community_tasks_async(graph: nx.DiGraph) -> List[Summarization
             # Find entities for this topic
             entity_ids = await find_entities_for_community_async(graph, topic_node_id)
             
-            # Find chunks - try via entities first, then via topic node directly
+            # Find chunks via entities (Entity <- Chunk via HAS_ENTITY)
             chunk_ids = []
             if entity_ids:
                 chunk_ids = await find_chunks_for_entities_async(graph, entity_ids)
-            
-            # If no chunks via entities, try to find chunks connected to this topic
-            if not chunk_ids:
-                # Look for chunks connected through subtopics
-                # Structure: CHUNK -> ENTITY -> SUBTOPIC -> TOPIC
-                # So we need to go backwards (predecessors)
-                for neighbor in graph.predecessors(topic_node_id):
-                    if graph.nodes[neighbor].get('node_type') == 'SUBTOPIC':
-                        for sub_neighbor in graph.predecessors(neighbor):
-                            if str(graph.nodes[sub_neighbor].get('node_type', '')).upper() in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY']:
-                                # Entity -> Subtopic, now look for Chunk -> Entity
-                                for entity_pred in graph.predecessors(sub_neighbor):
-                                    if str(graph.nodes[entity_pred].get('node_type', '')).upper() in ['CHUNK', 'TEXTCHUNK']:
-                                        chunk_ids.append(entity_pred)
-            
-
             
             if not chunk_ids:
                 logger.warning(f"No chunks found for topic {community_id}, skipping")

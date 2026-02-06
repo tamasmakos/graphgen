@@ -1,4 +1,4 @@
-from .uploader import KnowledgeGraphUploader
+from .neo4j_adapter import Neo4jGraphUploader
 
-__all__ = ["KnowledgeGraphUploader"]
+__all__ = ["Neo4jGraphUploader"]
 

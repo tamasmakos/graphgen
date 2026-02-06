@@ -53,7 +53,7 @@ class LevelAnalysisResult:
     silhouette_per_group: Optional[Dict[str, float]]
     anova_f_statistic: Optional[float]
     anova_p_value: Optional[float]
-    manova_approximation: Optional[Dict[str, float]]
+    multivariate_anova_on_pcs: Optional[Dict[str, float]]
     interpretation: str
 
 
@@ -273,42 +273,43 @@ def run_silhouette_analysis(
     if not SKLEARN_AVAILABLE:
         logger.warning("scikit-learn not available for silhouette analysis")
         return None, None
-    
+
     # Align embeddings and labels
     common_ids = set(embeddings.keys()) & set(labels.keys())
     if len(common_ids) < 3:
         logger.warning(f"Insufficient samples for silhouette analysis: {len(common_ids)}")
         return None, None
-    
+
     ids = list(common_ids)
     X = np.array([embeddings[id_] for id_ in ids])
     y = np.array([labels[id_] for id_ in ids])
-    
+
     # Need at least 2 clusters
     unique_labels = np.unique(y)
     if len(unique_labels) < 2:
         logger.warning("Need at least 2 clusters for silhouette analysis")
         return None, None
-    
+
     if len(unique_labels) >= len(X):
         logger.info(f"Skipping silhouette analysis: too many clusters ({len(unique_labels)}) relative to samples ({len(X)})")
         return None, None
-    
+
     try:
-        # Overall score
-        overall = silhouette_score(X, y)
-        
+        # Use cosine metric for consistency with the embedding space
+        # (KGE and RAG embeddings are compared via cosine similarity throughout the pipeline)
+        overall = silhouette_score(X, y, metric='cosine')
+
         # Per-sample scores for per-cluster analysis
-        sample_scores = silhouette_samples(X, y)
-        
+        sample_scores = silhouette_samples(X, y, metric='cosine')
+
         per_cluster = {}
         for label in unique_labels:
             mask = y == label
             if np.sum(mask) > 0:
                 per_cluster[int(label)] = float(np.mean(sample_scores[mask]))
-        
+
         return overall, per_cluster
-        
+
     except Exception as e:
         logger.error(f"Silhouette analysis failed: {e}")
         return None, None
@@ -349,9 +350,13 @@ def run_anova_analysis(
         return None, None
     
     try:
+        # Standardize before PCA to avoid scale-dominance
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
         # Reduce to first PC for univariate ANOVA
         pca = PCA(n_components=1)
-        X_pca = pca.fit_transform(X).flatten()
+        X_pca = pca.fit_transform(X_scaled).flatten()
         
         # Group by label
         groups = [X_pca[y == label] for label in unique_labels]
@@ -375,82 +380,103 @@ def run_anova_analysis(
         return None, None
 
 
-def run_manova_approximation(
+def run_multivariate_anova_on_pcs(
     embeddings: Dict[str, np.ndarray],
     labels: Dict[str, int],
     n_components: int = 5
 ) -> Optional[Dict[str, float]]:
     """
-    Approximate MANOVA using multiple ANOVAs on principal components.
-    
-    True MANOVA requires specialized libraries; this approximation:
-    1. Reduces to top N principal components
-    2. Runs ANOVA on each component
-    3. Combines results using Bonferroni correction
-    
+    Multiple univariate ANOVAs on principal components with Bonferroni correction.
+
+    NOTE: This is NOT a true MANOVA (Pillai's trace, Wilks' Lambda, etc.).
+    It reduces the embedding space to the top N principal components
+    (after standardization), runs separate one-way ANOVAs on each PC,
+    and combines p-values using Bonferroni correction.
+
+    Limitations:
+    - Ignores covariance between dependent variables (mitigated by PC orthogonality)
+    - Bonferroni on minimum p-value is conservative
+    - PCA maximises total variance, not group separation (LDA would be preferable)
+
     Args:
         embeddings: Dictionary mapping node IDs to embedding vectors
         labels: Dictionary mapping node IDs to cluster labels
         n_components: Number of PCs to analyze
-        
+
     Returns:
-        Dictionary with approximated statistics
+        Dictionary with test statistics, or None if insufficient data
     """
     if not SCIPY_AVAILABLE or not SKLEARN_AVAILABLE:
         return None
-    
+
     common_ids = set(embeddings.keys()) & set(labels.keys())
     if len(common_ids) < 10:
         return None
-    
+
     ids = list(common_ids)
     X = np.array([embeddings[id_] for id_ in ids])
     y = np.array([labels[id_] for id_ in ids])
-    
+
     unique_labels = np.unique(y)
     if len(unique_labels) < 2:
         return None
-    
+
     try:
+        # Standardize before PCA to avoid scale-dominance
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
         # Determine actual number of components
-        actual_components = min(n_components, X.shape[1], X.shape[0] - 1)
-        
+        actual_components = min(n_components, X_scaled.shape[1], X_scaled.shape[0] - 1)
+
         pca = PCA(n_components=actual_components)
-        X_pca = pca.fit_transform(X)
-        
+        X_pca = pca.fit_transform(X_scaled)
+
         # Run ANOVA on each component
         f_stats = []
         p_values = []
-        
+        eta_squared_values = []
+
         for i in range(actual_components):
             groups = [X_pca[y == label, i] for label in unique_labels]
             groups = [g for g in groups if len(g) > 0]
             if len(groups) < 2:
                 continue
-            
+
             # Check if we have at least one group with > 1 sample
             if all(len(g) < 2 for g in groups):
                 continue
-                
+
             f_stat, p_val = f_oneway(*groups)
             f_stats.append(f_stat)
             p_values.append(p_val)
-        
+
+            # Compute eta-squared (effect size) for practical significance
+            all_vals = X_pca[:, i]
+            grand_mean = np.mean(all_vals)
+            ss_between = sum(len(g) * (np.mean(g) - grand_mean) ** 2 for g in groups)
+            ss_total = np.sum((all_vals - grand_mean) ** 2)
+            eta_sq = ss_between / ss_total if ss_total > 0 else 0.0
+            eta_squared_values.append(eta_sq)
+
         if not p_values:
             return None
-        
+
         # Combine using minimum p-value with Bonferroni correction
         min_p = min(p_values) * len(p_values)  # Bonferroni
-        
+
         return {
+            "method": "multiple_univariate_anovas_on_pcs",
             "mean_f_statistic": float(np.mean(f_stats)),
             "min_p_value_corrected": float(min(min_p, 1.0)),
+            "mean_eta_squared": float(np.mean(eta_squared_values)),
             "n_components_tested": len(p_values),
-            "explained_variance_ratio": float(sum(pca.explained_variance_ratio_))
+            "explained_variance_ratio": float(sum(pca.explained_variance_ratio_)),
+            "note": "Not a true MANOVA; see docstring for limitations"
         }
-        
+
     except Exception as e:
-        logger.error(f"MANOVA approximation failed: {e}")
+        logger.error(f"Multivariate ANOVA on PCs failed: {e}")
         return None
 
 
@@ -485,9 +511,13 @@ def run_pairwise_comparisons(
     X = np.array([embeddings[id_] for id_ in ids])
     y = np.array([labels[id_] for id_ in ids])
     
+    # Standardize before PCA
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
     # Reduce to first PC
     pca = PCA(n_components=1)
-    X_pca = pca.fit_transform(X).flatten()
+    X_pca = pca.fit_transform(X_scaled).flatten()
     
     unique_labels = np.unique(y)
     if len(unique_labels) < 2:
@@ -510,13 +540,17 @@ def run_pairwise_comparisons(
             try:
                 t_stat, p_val = ttest_ind(group1, group2, equal_var=False)
                 
-                # Cohen's d effect size
+                # Hedges' g effect size (corrects Cohen's d for small-sample bias)
+                n1, n2 = len(group1), len(group2)
                 pooled_std = np.sqrt(
-                    ((len(group1) - 1) * np.var(group1) + (len(group2) - 1) * np.var(group2)) /
-                    (len(group1) + len(group2) - 2)
+                    ((n1 - 1) * np.var(group1, ddof=1) + (n2 - 1) * np.var(group2, ddof=1)) /
+                    (n1 + n2 - 2)
                 )
                 if pooled_std > 0:
                     cohens_d = abs(np.mean(group1) - np.mean(group2)) / pooled_std
+                    # Apply Hedges' correction factor for small samples
+                    correction = 1 - (3 / (4 * (n1 + n2 - 2) - 1))
+                    cohens_d *= correction
                 else:
                     cohens_d = 0.0
                 
@@ -638,7 +672,7 @@ def analyze_level(
     # Run analyses
     silhouette, silhouette_per_group = run_silhouette_analysis(embeddings, labels)
     f_stat, p_value = run_anova_analysis(embeddings, labels)
-    manova = run_manova_approximation(embeddings, labels)
+    manova = run_multivariate_anova_on_pcs(embeddings, labels)
     
     interpretation = interpret_separation(silhouette, p_value)
     
@@ -650,7 +684,7 @@ def analyze_level(
         silhouette_per_group={str(k): v for k, v in (silhouette_per_group or {}).items()},
         anova_f_statistic=f_stat,
         anova_p_value=p_value,
-        manova_approximation=manova,
+        multivariate_anova_on_pcs=manova,
         interpretation=interpretation
     )
 
@@ -688,7 +722,7 @@ def generate_topic_separation_report(
     ent_embeddings, ent_labels = extract_entity_embeddings_and_labels(graph)
     if len(ent_embeddings) > 5 and len(set(ent_labels.values())) > 1:
         silhouette, silhouette_per_group = run_silhouette_analysis(ent_embeddings, ent_labels)
-        manova = run_manova_approximation(ent_embeddings, ent_labels)
+        manova = run_multivariate_anova_on_pcs(ent_embeddings, ent_labels)
         interpretation = interpret_separation(silhouette, None)
         
         entity_result = LevelAnalysisResult(
@@ -699,7 +733,7 @@ def generate_topic_separation_report(
             silhouette_per_group={str(k): v for k, v in (silhouette_per_group or {}).items()},
             anova_f_statistic=None,
             anova_p_value=None,
-            manova_approximation=manova,
+            multivariate_anova_on_pcs=manova,
             interpretation=interpretation
         )
         logger.info(f"Entity clustering silhouette: {silhouette}")
