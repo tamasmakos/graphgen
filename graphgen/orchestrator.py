@@ -54,12 +54,11 @@ class KnowledgePipeline:
         1. Build Lexical Graph from Input Dir
         2. Extract Entities/Relations
         3. Semantic Enrichment (Embeddings, Similarity, Resolution)
-        3.5. KGE Training (Optional - for weighted community detection)
         4. Community Detection & Summarization
-        4.5. Topic Analysis (Statistical tests on community embeddings)
-        5. Pruning
-        6. Upload to Graph Database
-        7. Save Artifacts to Disk
+        5. Topic Analysis (Statistical tests)
+        6. Pruning
+        7. Upload to Graph Database
+        8. Save Artifacts to Disk
         """
         logger.info(f"Starting KnowledgePipeline run [{self.run_id}]...")
         self.run_started_at = datetime.now()
@@ -108,9 +107,6 @@ class KnowledgePipeline:
 
             # 3. Semantic Enrichment
             await self._step_enrichment(ctx)
-
-            # 3.5. KGE Training (Optional)
-            await self._step_kge_training(ctx)
 
             # 4. Community Detection & Summarization
             await self._step_communities(ctx, config_dict)
@@ -213,45 +209,6 @@ class KnowledgePipeline:
         except Exception as e:
             logger.error(f"Semantic enrichment failed: {e}")
             ctx.add_error("enrichment", str(e))
-
-    async def _step_kge_training(self, ctx: PipelineContext) -> None:
-        """Train PyKeen KGE and add edge weights for community detection."""
-        if not self.settings.kge.enabled:
-            logger.info("Step 3.5: KGE Training (Skipped - disabled in config)")
-            return
-        
-        try:
-            from graphgen.pipeline.embeddings.kge import (
-                train_global_kge, 
-                compute_edge_weights_from_kge,
-                store_embeddings_in_graph
-            )
-            
-            logger.info("Step 3.5: KGE Training")
-            
-            # Train KGE model
-            embeddings = train_global_kge(ctx.graph, self.settings.kge)
-            
-            if embeddings:
-                # Compute edge weights from embeddings
-                edges_weighted = compute_edge_weights_from_kge(ctx.graph, embeddings)
-                
-                # Store embeddings in graph nodes
-                nodes_updated = store_embeddings_in_graph(ctx.graph, embeddings)
-                
-                ctx.stats['kge'] = {
-                    'entities_embedded': len(embeddings),
-                    'edges_weighted': edges_weighted,
-                    'nodes_updated': nodes_updated
-                }
-                logger.info(f"KGE Complete: {len(embeddings)} embeddings, {edges_weighted} weighted edges")
-            else:
-                logger.warning("KGE training produced no embeddings")
-                ctx.stats['kge'] = {'entities_embedded': 0}
-                
-        except Exception as e:
-            logger.error(f"KGE training failed: {e}")
-            ctx.add_error("kge", str(e))
 
     async def _step_communities(self, ctx: PipelineContext, config: Dict[str, Any]) -> None:
         try:

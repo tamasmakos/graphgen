@@ -11,13 +11,15 @@ import numpy as np
 
 from graphgen.analytics.metrics import (
     calculate_modularity, 
-    calculate_topic_overlap, 
-    evaluate_kge_model_quality
+    calculate_topic_overlap
 )
 from graphgen.analytics.visualizer import (
     plot_topic_heatmap, 
     generate_interactive_explorer
 )
+from graphgen.analytics.reporting import generate_topic_separation_report
+from graphgen.analytics.diversity import calculate_topic_diversity
+
 
 logger = logging.getLogger(__name__)
 
@@ -93,28 +95,6 @@ class GraphAnalyzer:
         else:
             logger.info("Skipping topic overlap: no topic embeddings available.")
                 
-        # 3. KGE Comparison (if enabled)
-        kge_conf = self.config.get('kge_comparison', {})
-        if kge_conf.get('enabled', False):
-            logger.info("Running KGE model comparison...")
-            models = kge_conf.get('models', ['TransE', 'DistMult'])
-            kge_results = {}
-            for model in models:
-                logger.info(f"Evaluating KGE model: {model}")
-                metrics = evaluate_kge_model_quality(
-                    graph, 
-                    model_name=model, 
-                    epochs=kge_conf.get('epochs', 50)
-                )
-                kge_results[model] = metrics
-                if not metrics:
-                    logger.info("No KGE metrics produced for model %s.", model)
-            results['kge_comparison'] = kge_results
-            
-            # Save KGE results
-            with open(os.path.join(self.output_dir, "kge_comparison.json"), 'w') as f:
-                json.dump(kge_results, f, indent=2)
-
         # 4. Interactive Visualization
         if self.config.get('visualization', {}).get('interactive', True):
             logger.info("Generating interactive explorer...")
@@ -124,6 +104,27 @@ class GraphAnalyzer:
                 communities
             )
             
+        if self.config.get('calculate_diversity', False):
+            # Extract top words for diversity
+            # This requires access to top words which might be in node attributes
+            top_words_list = []
+            for n, data in graph.nodes(data=True):
+                if data.get('node_type') == 'TOPIC':
+                    # Assuming 'top_words' attribute exists or can be parsed from summary/description
+                    # For now, placeholder or if extraction is possible
+                    pass
+            # diversity = calculate_topic_diversity(top_words_list)
+            # results['topic_diversity'] = diversity
+
+        # 3. Separation Report (if not already run by orchestrator, or if we want to re-run)
+        if self.config.get('run_separation_report', False):
+             sep_report = generate_topic_separation_report(
+                 graph, 
+                 os.path.join(self.output_dir, "topic_separation_report.json"),
+                 self.config
+             )
+             results['separation'] = sep_report
+
         # Save summary report
         with open(os.path.join(self.output_dir, "analysis_summary.json"), 'w') as f:
             json.dump(results, f, indent=2)
@@ -132,20 +133,23 @@ class GraphAnalyzer:
         return results
         
     def _extract_topic_embeddings(self, graph: nx.DiGraph) -> Dict[str, np.ndarray]:
+        """Extract topic embeddings (from summary-based embedding when available)."""
         embeddings = {}
         for n, data in graph.nodes(data=True):
-            if data.get('node_type') == 'COMMUNITY' and 'embedding' in data:
-                # Handle cases where embedding might be a list or numpy array
-                emb = data['embedding']
-                if isinstance(emb, list):
-                    embeddings[n] = np.array(emb)
-                else:
-                    embeddings[n] = emb
+            node_type = data.get('node_type')
+            if node_type not in ('COMMUNITY', 'TOPIC') or 'embedding' not in data:
+                continue
+            emb = data['embedding']
+            if isinstance(emb, list):
+                embeddings[n] = np.array(emb)
+            else:
+                embeddings[n] = emb
         return embeddings
 
     def _extract_topic_labels(self, graph: nx.DiGraph) -> Dict[str, str]:
+        """Labels for topic nodes (title or node id)."""
         labels = {}
         for n, data in graph.nodes(data=True):
-            if data.get('node_type') == 'COMMUNITY':
-                labels[n] = data.get('title', n)
+            if data.get('node_type') in ('COMMUNITY', 'TOPIC'):
+                labels[n] = data.get('title') or data.get('name', n)
         return labels

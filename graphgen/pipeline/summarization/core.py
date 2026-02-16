@@ -75,11 +75,46 @@ async def generate_title_internal(llm: Any, text: str) -> str:
             return "Untitled Topic"
     return "Untitled Topic"
 
+def _clean_summary_output(text: str) -> str:
+    """Post-process LLM summaries to remove boilerplate phrases and quotes."""
+    if not text:
+        return ""
+    text = text.strip()
+
+    prefixes_to_remove = [
+        "Summary:", "summary:", "SUMMARY:",
+        "Here is the summary:", "Here is a summary of",
+        "Here is a concise summary of", "Here is a brief summary of",
+        "Here is a short summary of",
+        "Here's the summary:", "Here's a summary of",
+        "Here's a concise summary of", "Here's a brief summary of",
+        "Here's a short summary of",
+        "This is a summary of", "This is a concise summary of",
+        "This is a brief summary of", "This is a short summary of",
+        "Below is a summary of", "Below is a concise summary of",
+        "Below is a brief summary of", "Below is a short summary of",
+        "The following is a summary of",
+        "The following is a concise summary of",
+        "The following is a brief summary of",
+        "The following is a short summary of",
+    ]
+
+    for prefix in prefixes_to_remove:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+
+    # Strip enclosing quotes if the whole summary is quoted
+    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+        text = text[1:-1].strip()
+
+    return text.strip()
+
+
 async def summarize_text_internal(llm: Any, text: str) -> str:
-    """Generate summary for given text using LLM"""
-    
+    """Generate summary for given text using LLM."""
+
     truncated_text = truncate_text_for_llm(text, max_chars=12000)
-    
+
     summary_prompt = ChatPromptTemplate.from_template(
         """Please provide a comprehensive summary (3-5 sentences) of the following content. 
         Focus on average person topics - life related things, things to remember, things to notice, habits, patterns and so on.
@@ -89,7 +124,7 @@ async def summarize_text_internal(llm: Any, text: str) -> str:
         
         Summary:"""
     )
-    
+
     for attempt in range(3):
         try:
             chain = summary_prompt | llm
@@ -98,6 +133,7 @@ async def summarize_text_internal(llm: Any, text: str) -> str:
                 summary = response.content
             else:
                 summary = str(response)
+            summary = _clean_summary_output(summary)
             return summary if summary else "No summary available."
         except RuntimeError as e:
             if "Event loop is closed" in str(e) and attempt < 2:

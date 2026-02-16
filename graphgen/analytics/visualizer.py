@@ -2,12 +2,13 @@
 
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import seaborn as sns
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -139,3 +140,52 @@ def generate_interactive_explorer(
             f.write(html)
             
     logger.info(f"Saved interactive explorer to {output_path}")
+
+def plot_node2vec_impact(
+    results_history: List[Dict[str, Any]],
+    output_path: str
+) -> None:
+    """
+    Generate and save a plot comparing Baseline vs Node2Vec modularity.
+    """
+    try:
+        if len(results_history) < 2:
+            logger.info("Skipping Node2Vec plot: need at least 2 iterations.")
+            return
+        
+        plt.figure(figsize=(10, 6))
+        sns.set_style("whitegrid")
+        
+        df = pd.DataFrame(results_history)
+        iterations = df['iteration']
+        modularity = df['modularity']
+        baseline = df['modularity_baseline']
+        
+        plt.plot(iterations, modularity, marker='o', label='Node2Vec Modularity', linewidth=2, color='#1f77b4')
+        plt.plot(iterations, baseline, marker='s', label='Baseline Modularity', linewidth=2, linestyle='--', color='#ff7f0e')
+        
+        plt.title('Impact of Node2Vec on Community Modularity', fontsize=16)
+        plt.xlabel('Iteration', fontsize=12)
+        plt.ylabel('Modularity', fontsize=12)
+        plt.legend(fontsize=10)
+        plt.xticks(iterations)
+        
+        # Add annotations for delta
+        for i, (m, b) in enumerate(zip(modularity, baseline)):
+            delta = m - b
+            plt.annotate(f'{delta:+.3f}', 
+                         xy=(iterations[i], m), 
+                         xytext=(0, 10), 
+                         textcoords='offset points',
+                         ha='center', 
+                         color='green' if delta > 0 else 'red',
+                         fontsize=9)
+        
+        plt.tight_layout()
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        plt.savefig(output_path, dpi=300)
+        plt.close()
+        logger.info(f"Saved Node2Vec impact plot to {output_path}")
+        
+    except Exception:
+        logger.exception("Failed to plot Node2Vec impact.")

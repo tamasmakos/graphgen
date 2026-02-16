@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import networkx as nx
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, spearmanr, ttest_rel
 from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
@@ -38,10 +38,13 @@ def calculate_modularity(graph: nx.Graph, communities: Dict[str, int]) -> float:
         # Create subgraph of only the nodes involved in communities
         # Modularity requires partition to cover all nodes in the graph
         subgraph = graph.subgraph(common_nodes)
-        if len(subgraph) == 0:
+        if len(subgraph) == 0 or subgraph.number_of_edges() == 0:
              return 0.0
 
         return nx.community.modularity(subgraph, valid_communities)
+    except ZeroDivisionError:
+        logger.warning("Modularity calculation failed due to ZeroDivisionError (likely no edges).")
+        return 0.0
     except Exception:
         logger.exception("Failed to calculate modularity.")
         return 0.0
@@ -112,63 +115,35 @@ def analyze_modularity_vs_overlap(
         
     return stats
 
-def evaluate_kge_model_quality(
-    graph: nx.DiGraph, 
-    model_name: str = 'TransE', 
-    embedding_dim: int = 64,
-    epochs: int = 50
+def calculate_node2vec_significance(
+    results_history: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """
-    Train a KGE model and return quality metrics (MRR, Hits@k).
-    Wraps PyKEEN pipeline.
+    Perform a paired t-test to determine if Node2Vec significantly improved modularity.
+    Expects list of dicts with keys 'modularity' and 'modularity_baseline'.
     """
+    stats_res = {}
     try:
-        from pykeen.pipeline import pipeline
-        from pykeen.triples import TriplesFactory
-    except ImportError:
-        logger.warning("PyKEEN not installed. Skipping KGE evaluation.")
-        return {}
+        modularity = [r.get('modularity', 0.0) for r in results_history]
+        baseline = [r.get('modularity_baseline', 0.0) for r in results_history]
         
-    # Extract triples
-    triples = []
-    for u, v, data in graph.edges(data=True):
-        rel = data.get('relation_type') or data.get('label') or 'RELATED_TO'
-        triples.append((str(u), str(rel), str(v)))
-    
-    if not triples:
-        logger.info("Skipping KGE evaluation: no triples found.")
-        return {}
+        if len(modularity) < 2:
+            logger.info("Skipping Node2Vec significance test: need at least 2 iterations.")
+            return {}
+
+        # Paired t-test
+        t_stat, p_val = ttest_rel(modularity, baseline)
         
-    df = pd.DataFrame(triples, columns=['head', 'relation', 'tail'])
-    tf = TriplesFactory.from_labeled_triples(df[['head', 'relation', 'tail']].values)
-    
-    training, testing = tf.split([0.8, 0.2], random_state=42)
-    logger.info(
-        "KGE evaluation dataset: triples=%d, train=%d, test=%d.",
-        len(triples),
-        training.num_triples,
-        testing.num_triples,
-    )
-    
-    try:
-        result = pipeline(
-            model=model_name,
-            training=training,
-            testing=testing,
-            model_kwargs=dict(embedding_dim=embedding_dim),
-            training_kwargs=dict(num_epochs=epochs),
-            random_seed=42
+        stats_res['t_statistic'] = float(t_stat)
+        stats_res['p_value'] = float(p_val)
+        stats_res['significant'] = bool(p_val < 0.05)
+        
+        logger.info(
+            f"Node2Vec Significance Test (n={len(modularity)}): t={t_stat:.4f}, p={p_val:.4f} "
+            f"({'Significant' if stats_res['significant'] else 'Not Significant'})"
         )
         
-        metrics = result.get_metric_results().to_dict()
-        # Simplify metrics
-        simple_metrics = {
-            'mrr': metrics.get('both', {}).get('realistic', {}).get('inverse_harmonic_mean_rank'),
-            'hits_at_10': metrics.get('both', {}).get('realistic', {}).get('hits_at_10'),
-            'loss': result.losses[-1] if result.losses else None
-        }
-        return simple_metrics
-        
     except Exception:
-        logger.exception("PyKEEN evaluation failed for %s.", model_name)
-        return {}
+        logger.exception("Node2Vec significance analysis failed.")
+        
+    return stats_res

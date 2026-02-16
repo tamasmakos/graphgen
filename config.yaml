@@ -10,19 +10,18 @@ infra:
   graph_db_type: "neo4j"
   # neo4j_host: "neo4j" # Handled via .env (NEO4J_HOST)
   # neo4j_port: 7687 # Handled via .env (NEO4J_PORT)
-
   neo4j_user: "neo4j"
   neo4j_password: "password"
-  input_dir: "/app/input/txt/translated"
-  output_dir: "/app/output"
+  input_dir: "input/txt/translated"
+  output_dir: "output"
   clean_start: true
 
 # LLM Configuration
 llm:
   base_model: "llama-3.1-8b-instant"
   extraction_model: "meta-llama/llama-4-scout-17b-16e-instruct"
-  summarization_model: "llama-3.3-70b-versatile"
-  temperature: 0.1
+  summarization_model: "llama-3.1-8b-instant"
+  temperature: 0.0
 
 # Extraction Settings
 extraction:
@@ -35,7 +34,6 @@ extraction:
   hierarchy_levels:
     - "COMMUNITY"
     - "SUBCOMMUNITY"
-  entity_labels: ["Person", "Organization", "Location", "Policy", "Event", "Concept"]
   ontology:
     enabled: true
     ontology_dir: "/app/input/ontology/cdm-4.13.2"
@@ -48,28 +46,27 @@ extraction:
 
 # Graph Schema is hardcoded in graphgen/config/schema.py
 
-kge:
-  enabled: true
-  model: "RGCN"
-  embedding_dim: 128
-  learning_rate: 0.01
-  num_epochs: 50
-  early_stopping_patience: 5
-
 community:
   resolutions: [0.5] # Reduced for speed
   n_iterations: 2 # Reduced for speed
   min_community_size: 3
   seed: 42
+  
+  # Node2Vec Config
+  node2vec_enabled: true
+  node2vec_dimensions: 64
+  node2vec_walk_length: 16
+  node2vec_num_walks: 20
 
 # Analytics & Visualization
 analytics:
   enabled: true
   output_dir: "analytics_reports"
-  kge_comparison:
-    enabled: false # Set to true to run comprehensive model check
-    models: ["TransE", "DistMult"]
-    epochs: 20
+  run_separation_report: true
+  # Silhouette thresholds for topic separation analysis
+  silhouette_min_samples: 3
+  silhouette_min_samples_per_cluster: 2
+  silhouette_max_clusters_ratio: 0.5
   visualization:
     interactive: true
     heatmap: true
@@ -77,6 +74,6 @@ analytics:
 # Iterative Experiment Configuration - Smoke Test
 iterative:
   enabled: true
-  batch_size: 5
-  iterations: 10
+  batch_size: 3
+  iterations: 15
   random_seed: 42

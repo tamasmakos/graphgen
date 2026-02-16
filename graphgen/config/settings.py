@@ -180,26 +180,6 @@ class EmbeddingSettings(BaseSettings):
     )
 
 
-class KGESettings(BaseSettings):
-    """
-    PyKeen Knowledge Graph Embedding Configuration.
-    
-    When enabled, trains a KGE model on entity-relation triples and uses
-    the resulting embeddings to compute edge weights for Leiden community detection.
-    """
-    enabled: bool = False  # Toggle KGE training and weighted communities
-    model: str = "DistMult"  # PyKeen model type
-    embedding_dim: int = 64
-    learning_rate: float = 0.01
-    num_epochs: int = 50
-    early_stopping_patience: int = 5
-
-    model_config = SettingsConfigDict(
-        populate_by_name=True,
-        extra="ignore"
-    )
-
-
 class AnalyticsSettings(BaseSettings):
     """
     Advanced Analytics & Visualization Configuration.
@@ -211,15 +191,12 @@ class AnalyticsSettings(BaseSettings):
     
     # Topic Separation & Modularity
     topic_separation_test: bool = True  # Legacy flag, kept for backward compatibility logic if needed
-    
-    # KGE Comparison
-    kge_comparison: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            "enabled": False, 
-            "models": ["TransE", "DistMult"], 
-            "epochs": 50
-        }
-    )
+    # Silhouette analysis thresholds (used in topic_separation.py)
+    # These control when silhouette is considered mathematically valid and
+    # practically interpretable. See `run_silhouette_analysis` for details.
+    silhouette_min_samples: int = 3
+    silhouette_min_samples_per_cluster: int = 2
+    silhouette_max_clusters_ratio: float = 0.5  # k <= n_samples * ratio
     
     # Visualization
     visualization: Dict[str, Any] = Field(
@@ -271,6 +248,12 @@ class CommunitySettings(BaseSettings):
     n_iterations: int = 10  # Number of iterations for consistency
     min_community_size: int = 3  # Merge communities smaller than this
     seed: Optional[int] = 42
+    
+    # Node2Vec Weighting
+    node2vec_enabled: bool = False
+    node2vec_dimensions: int = 64
+    node2vec_walk_length: int = 16
+    node2vec_num_walks: int = 20
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -288,7 +271,7 @@ class PipelineSettings(BaseSettings):
     extraction: ExtractionSettings = Field(default_factory=ExtractionSettings)
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
-    kge: KGESettings = Field(default_factory=KGESettings)
+    # kge field removed
     analysis: AnalyticsSettings = Field(default_factory=AnalyticsSettings) # Alias for backward compatibility or direct usage
     analytics: AnalyticsSettings = Field(default_factory=AnalyticsSettings)
     community: CommunitySettings = Field(default_factory=CommunitySettings)

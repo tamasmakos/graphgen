@@ -1756,7 +1756,20 @@ def clean_llm_output(text: str) -> str:
         "Topic:", "topic:", "TOPIC:",
         "The title is:", "The summary is:",
         "Here is the title:", "Here is the summary:",
-        "Here's the title:", "Here's the summary:"
+        "Here's the title:", "Here's the summary:",
+        # More verbose meta-introductions we don't want in summaries
+        "Here is a concise summary of", "Here is a brief summary of",
+        "Here is a short summary of", "Here is a summary of",
+        "Here's a concise summary of", "Here's a brief summary of",
+        "Here's a short summary of", "Here's a summary of",
+        "This is a concise summary of", "This is a brief summary of",
+        "This is a short summary of", "This is a summary of",
+        "Below is a concise summary of", "Below is a brief summary of",
+        "Below is a short summary of", "Below is a summary of",
+        "The following is a concise summary of",
+        "The following is a brief summary of",
+        "The following is a short summary of",
+        "The following is a summary of"
     ]
     
     for prefix in prefixes_to_remove:
@@ -2167,75 +2180,102 @@ async def create_all_topic_nodes(graph: nx.DiGraph, processed_tasks: List[Summar
     }
 
 async def get_all_topic_nodes_async(graph: nx.DiGraph) -> List[Tuple[str, Dict[str, Any]]]:
-    """Get all topic and subtopic nodes that have titles"""
-    
+    """Get all topic and subtopic nodes that have a title or summary (for similarity/embedding)."""
     topic_nodes = []
-    
     for node_id, node_data in graph.nodes(data=True):
-        if (node_data.get('node_type') in ['COMMUNITY', 'SUBCOMMUNITY'] and 
-            node_data.get('title')):
+        node_type = node_data.get('node_type')
+        if node_type not in ('COMMUNITY', 'SUBCOMMUNITY', 'TOPIC', 'SUBTOPIC'):
+            continue
+        if node_data.get('title') or node_data.get('summary') or node_data.get('community_summary'):
             topic_nodes.append((node_id, node_data))
-    
     return topic_nodes
 
+def _topic_text_for_similarity(node_data: Dict[str, Any]) -> str:
+    """Text used for topic similarity: prefer actual summary over title."""
+    s = (node_data.get('summary') or node_data.get('community_summary') or '').strip()
+    if s:
+        return s
+    return (node_data.get('title') or node_data.get('name') or '').strip()
+
+
 async def find_similar_topic_pairs_async(topic_nodes: List[Tuple[str, Dict[str, Any]]]) -> List[SimilarTopicPair]:
-    """Find similar topic pairs using Levenshtein distance"""
-    
-    similar_pairs = []
-    
+    """Find similar topic pairs using summary-based embedding similarity when available, else Levenshtein on title."""
+    similar_pairs: List[SimilarTopicPair] = []
+    n = len(topic_nodes)
+
+    # Prefer embedding-based similarity on actual summary (or title fallback) when available
+    if n >= 2 and EMBEDDINGS_AVAILABLE:
+        texts = []
+        for _id, data in topic_nodes:
+            t = _topic_text_for_similarity(data)
+            texts.append(t if t else '')
+        if sum(1 for t in texts if t) >= 2:
+            try:
+                model = SentenceTransformer('all-MiniLM-L6-v2')
+                from sklearn.metrics.pairwise import cosine_similarity
+                emb = model.encode(texts)
+                sim_matrix = cosine_similarity(emb)
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        if not texts[i] or not texts[j]:
+                            continue
+                        similarity_score = float(sim_matrix[i, j])
+                        if similarity_score <= 0.7:
+                            continue
+                        node1_id, node1_data = topic_nodes[i]
+                        node2_id, node2_data = topic_nodes[j]
+                        level1 = "TOPIC" if node1_data.get('node_type') in ('COMMUNITY', 'TOPIC') else "SUBTOPIC"
+                        level2 = "TOPIC" if node2_data.get('node_type') in ('COMMUNITY', 'TOPIC') else "SUBTOPIC"
+                        pair = SimilarTopicPair(
+                            topic1_id=node1_id,
+                            topic1_title=node1_data.get('title') or node1_id,
+                            topic1_level=level1,
+                            topic2_id=node2_id,
+                            topic2_title=node2_data.get('title') or node2_id,
+                            topic2_level=level2,
+                            similarity_score=similarity_score,
+                            levenshtein_distance=-1,
+                            is_potential_duplicate=similarity_score > 0.9
+                        )
+                        similar_pairs.append(pair)
+                similar_pairs.sort(key=lambda x: x.similarity_score, reverse=True)
+                return similar_pairs
+            except Exception as e:
+                logger.warning("Summary embedding similarity failed, falling back to title Levenshtein: %s", e)
+
+    # Fallback: Levenshtein on titles only
     for i, (node1_id, node1_data) in enumerate(topic_nodes):
         for j, (node2_id, node2_data) in enumerate(topic_nodes):
-            if i >= j:  # Avoid duplicates and self-comparison
+            if i >= j:
                 continue
-            
-            title1 = node1_data.get('title', '')
-            title2 = node2_data.get('title', '')
-            
+            title1 = node1_data.get('title', '') or ''
+            title2 = node2_data.get('title', '') or ''
             if not title1 or not title2:
                 continue
-            
-            # Calculate Levenshtein distance
             distance = _levenshtein_distance_safe(title1.lower(), title2.lower())
             max_len = max(len(title1), len(title2))
-            
-            if max_len > 0:
-                similarity_score = 1 - (distance / max_len)
-            else:
-                similarity_score = 1.0
-            
-            # Consider pairs with high similarity
-            if similarity_score > 0.7:  # 70% similarity threshold
-                
-                # Determine node levels
-                level1 = "TOPIC" if node1_data.get('node_type') == 'COMMUNITY' else "SUBTOPIC"
-                level2 = "TOPIC" if node2_data.get('node_type') == 'COMMUNITY' else "SUBTOPIC"
-                
-                # Mark as potential duplicate if very high similarity
-                is_potential_duplicate = similarity_score > 0.9
-                
-                pair = SimilarTopicPair(
-                    topic1_id=node1_id,
-                    topic1_title=title1,
-                    topic1_level=level1,
-                    topic2_id=node2_id,
-                    topic2_title=title2,
-                    topic2_level=level2,
-                    similarity_score=similarity_score,
-                    levenshtein_distance=distance,
-                    is_potential_duplicate=is_potential_duplicate
-                )
-                
-                similar_pairs.append(pair)
-    
-    # Sort by similarity score (highest first)
+            similarity_score = (1 - (distance / max_len)) if max_len > 0 else 1.0
+            if similarity_score <= 0.7:
+                continue
+            level1 = "TOPIC" if node1_data.get('node_type') in ('COMMUNITY', 'TOPIC') else "SUBTOPIC"
+            level2 = "TOPIC" if node2_data.get('node_type') in ('COMMUNITY', 'TOPIC') else "SUBTOPIC"
+            similar_pairs.append(SimilarTopicPair(
+                topic1_id=node1_id,
+                topic1_title=title1,
+                topic1_level=level1,
+                topic2_id=node2_id,
+                topic2_title=title2,
+                topic2_level=level2,
+                similarity_score=similarity_score,
+                levenshtein_distance=distance,
+                is_potential_duplicate=similarity_score > 0.9
+            ))
     similar_pairs.sort(key=lambda x: x.similarity_score, reverse=True)
-    
     return similar_pairs
 
 async def check_topic_title_similarity_simple(graph: nx.DiGraph) -> Dict[str, Any]:
-    """Check for similar topic titles using Levenshtein Distance"""
-    
-    logger.info("Checking for similar topic titles...")
+    """Check for similar topics using summary-based embedding similarity when available, else Levenshtein on titles."""
+    logger.info("Checking for similar topics (summary-based embedding or title Levenshtein)...")
     
     # Get all topic nodes
     topic_nodes = await get_all_topic_nodes_async(graph)

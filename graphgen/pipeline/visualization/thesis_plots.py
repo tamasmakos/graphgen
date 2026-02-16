@@ -69,7 +69,7 @@ COLORS = {
     'secondary': '#e74c3c',     # Muted red
     'accent': '#27ae60',        # Green
     'baseline': '#95a5a6',      # Gray for baseline
-    'kge': '#2980b9',           # Blue for KGE-enhanced
+    # 'kge': '#2980b9',           # Blue for KGE-enhanced (removed)
     'modularity': '#2c3e50',    # Dark for modularity
     'separation': '#c0392b',    # Red for separation
     'overlap': '#e67e22',       # Orange for overlap
@@ -185,74 +185,10 @@ def _load_silhouette_samples(diagnostics_dir: Path) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Figure 1: KGE Impact on Modularity
+# Figure 1: KGE Impact on Modularity (Removed)
 # ---------------------------------------------------------------------------
 
-def plot_kge_modularity_impact(df: pd.DataFrame, output_dir: str) -> Optional[str]:
-    """
-    Generate grouped bar chart comparing baseline modularity vs KGE-enhanced modularity.
-
-    This is the core figure demonstrating that knowledge graph embeddings
-    improve the structural quality of community detection, measured by
-    the Newman-Girvan modularity Q.
-
-    Returns:
-        Path to saved figure, or None on failure.
-    """
-    if not MATPLOTLIB_AVAILABLE:
-        return None
-
-    required_cols = {'iteration', 'modularity', 'modularity_baseline'}
-    if not required_cols.issubset(df.columns):
-        logger.warning(f"Missing columns for KGE modularity plot: {required_cols - set(df.columns)}")
-        return None
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-
-    iterations = df['iteration'].values
-    baseline = df['modularity_baseline'].values
-    kge_mod = df['modularity'].values
-    delta = kge_mod - baseline
-
-    x = np.arange(len(iterations))
-    bar_width = 0.35
-
-    bars_base = ax.bar(
-        x - bar_width / 2, baseline, bar_width,
-        label='Baseline (no KGE)', color=COLORS['baseline'],
-        edgecolor='white', linewidth=0.8, zorder=3
-    )
-    bars_kge = ax.bar(
-        x + bar_width / 2, kge_mod, bar_width,
-        label='KGE-Enhanced', color=COLORS['kge'],
-        edgecolor='white', linewidth=0.8, zorder=3
-    )
-
-    # Annotate delta improvement
-    for i, (bk, d) in enumerate(zip(bars_kge, delta)):
-        sign = '+' if d >= 0 else ''
-        ax.annotate(
-            f'{sign}{d:.3f}',
-            xy=(bk.get_x() + bk.get_width() / 2, bk.get_height()),
-            xytext=(0, 6), textcoords='offset points',
-            ha='center', va='bottom', fontsize=9, fontweight='bold',
-            color=COLORS['accent'] if d > 0 else COLORS['secondary']
-        )
-
-    ax.set_xlabel('Iteration')
-    ax.set_ylabel('Modularity (Q)')
-    ax.set_title('Effect of Knowledge Graph Embeddings on Community Modularity')
-    ax.set_xticks(x)
-    ax.set_xticklabels([f'Iter {int(it)}' for it in iterations])
-    ax.legend(loc='upper right', framealpha=0.9)
-    ax.set_ylim(0, max(max(baseline), max(kge_mod)) * 1.15)
-
-    plt.tight_layout()
-    out_path = str(Path(output_dir) / "thesis_kge_modularity_impact.png")
-    fig.savefig(out_path)
-    plt.close(fig)
-    logger.info(f"Saved KGE modularity impact plot: {out_path}")
-    return out_path
+# plot_kge_modularity_impact removed
 
 
 # ---------------------------------------------------------------------------
@@ -671,86 +607,10 @@ def plot_statistical_summary(
 
 
 # ---------------------------------------------------------------------------
-# Figure 6: KGE Modularity Delta with Separation Overlay
+# Figure 6: KGE Modularity Delta with Separation Overlay (Removed)
 # ---------------------------------------------------------------------------
 
-def plot_kge_delta_separation(df: pd.DataFrame, output_dir: str) -> Optional[str]:
-    """
-    Combined figure showing the modularity improvement from KGE (delta)
-    alongside topic separation, testing the causal chain:
-        KGE -> improved modularity -> better topic separation.
-
-    Returns:
-        Path to saved figure, or None on failure.
-    """
-    if not MATPLOTLIB_AVAILABLE:
-        return None
-
-    required_cols = {'iteration', 'modularity', 'modularity_baseline', 'topic_separation'}
-    if not required_cols.issubset(df.columns):
-        logger.warning(f"Missing columns for delta-separation plot: {required_cols - set(df.columns)}")
-        return None
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
-
-    iterations = df['iteration'].values
-    delta_mod = df['modularity'].values - df['modularity_baseline'].values
-    separation = df['topic_separation'].values
-
-    # Panel A: Modularity delta (waterfall-style)
-    bar_colors = [COLORS['accent'] if d >= 0 else COLORS['secondary'] for d in delta_mod]
-    bars = ax1.bar(iterations, delta_mod, color=bar_colors, edgecolor='white', linewidth=0.8)
-    ax1.axhline(y=0, color='gray', linewidth=1.0, linestyle='-')
-    ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('Modularity Delta (KGE - Baseline)')
-    ax1.set_title('(A) KGE Modularity Improvement')
-    ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
-
-    for bar, d in zip(bars, delta_mod):
-        sign = '+' if d >= 0 else ''
-        ax1.text(
-            bar.get_x() + bar.get_width() / 2, bar.get_height(),
-            f'{sign}{d:.4f}', ha='center', va='bottom' if d >= 0 else 'top',
-            fontsize=10, fontweight='bold'
-        )
-
-    # Panel B: Scatter - delta modularity vs topic separation
-    ax2.scatter(
-        delta_mod, separation, c=COLORS['primary'], s=120,
-        edgecolors='white', linewidth=1.5, zorder=4
-    )
-
-    # Label each point with iteration number
-    for i, (dm, sep, it) in enumerate(zip(delta_mod, separation, iterations)):
-        ax2.annotate(
-            f'Iter {int(it)}',
-            xy=(dm, sep), xytext=(8, 8),
-            textcoords='offset points', fontsize=9,
-            arrowprops=dict(arrowstyle='->', color='gray', lw=0.8)
-        )
-
-    # Add trend line only if enough data points for meaningful regression
-    if len(delta_mod) >= 5:
-        z = np.polyfit(delta_mod, separation, 1)
-        p = np.poly1d(z)
-        x_line = np.linspace(min(delta_mod), max(delta_mod), 100)
-        ax2.plot(x_line, p(x_line), '--', color=COLORS['secondary'], alpha=0.6, linewidth=1.5)
-    elif len(delta_mod) >= 2:
-        ax2.text(
-            0.5, 0.02, f'n={len(delta_mod)} points (trend line requires n>=5)',
-            transform=ax2.transAxes, ha='center', fontsize=8, color='gray', style='italic'
-        )
-
-    ax2.set_xlabel('Modularity Delta (KGE - Baseline)')
-    ax2.set_ylabel('Topic Separation (cosine distance)')
-    ax2.set_title('(B) Modularity Improvement vs. Topic Separation')
-
-    plt.tight_layout()
-    out_path = str(Path(output_dir) / "thesis_kge_delta_separation.png")
-    fig.savefig(out_path)
-    plt.close(fig)
-    logger.info(f"Saved KGE delta-separation plot: {out_path}")
-    return out_path
+# plot_kge_delta_separation removed
 
 
 # ---------------------------------------------------------------------------
@@ -1070,13 +930,11 @@ def generate_all_thesis_plots(output_dir: str) -> Dict[str, Optional[str]]:
         - {output_dir}/iteration_*_report.json
 
     Writes:
-        - thesis_kge_modularity_impact.png
         - thesis_modularity_vs_separation.png
         - thesis_silhouette_dashboard.png
         - thesis_silhouette_distributions.png
         - thesis_pca_scree.png
         - thesis_statistical_summary.png
-        - thesis_kge_delta_separation.png
         - thesis_manova_components.png
         - thesis_graph_growth.png
 
@@ -1109,9 +967,7 @@ def generate_all_thesis_plots(output_dir: str) -> Dict[str, Optional[str]]:
 
     # Generate each figure
     if df is not None:
-        results['kge_modularity_impact'] = plot_kge_modularity_impact(df, output_dir)
         results['modularity_vs_separation'] = plot_modularity_vs_separation(df, output_dir)
-        results['kge_delta_separation'] = plot_kge_delta_separation(df, output_dir)
         results['graph_growth'] = plot_graph_growth(df, output_dir)
 
     if df is not None and reports:

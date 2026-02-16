@@ -106,7 +106,6 @@ The package is organized into the following core components:
 - **`entity_relation.extraction`**: Orchestrates entity extraction from text chunks using configured backends (Spacy, GLiNER, LLM).
 - **`entity_relation.extractors`**: Contains specific extractor implementations.
 - **`graph_cleaning.resolution`**: Handles entity resolution and merging.
-- **`embeddings.kge`**: **[NEW]** PyKeen Knowledge Graph Embedding training module. Trains KGE models (e.g., DistMult) on entity-relation triples and computes edge weights for improved community detection.
 - **`summarization.core`**: **[NEW]** Hierarchical summarization module. Generates titles and summaries for topics and subtopics using LLMs. Optimized for label robustness, handling variations like `Chunk` and `NamedEntity`.
 - **`analysis.topic_separation`**: **[NEW]** Statistical analysis of topic/community embedding separation. Implements silhouette scores, MANOVA, and pairwise tests to verify semantic clustering. Gracefully handles small sample sizes and singleton clusters by skipping inapplicable tests.
 
@@ -157,25 +156,6 @@ The pipeline uses a "gatekeeper" architecture to ensure high precision and stric
 2.  **Schema Filtering**: The extraction schema for that specific chunk is dynamically restricted to *only* the classes discovered in step 1.
 3.  **Strict LLM Extraction**: The LLM acts as the final extractor, operating in `strict_mode=True`. It identifies relationships and instances but is strictly constrained to the ontology types verified by the NER gatekeeper.
 4.  **Classification**: Entities are automatically tagged with their validated `ontology_class` (from the LLM) and the original `gliner_type` (from the NER step), enabling seamless integration with existing RDF/OWL knowledge bases while preserving detection traceability.
-
-### Knowledge Graph Embeddings (PyKeen)
-
-Enable KGE training to use embedding-based edge weights for community detection:
-
-```yaml
-kge:
-  enabled: true  # Toggle KGE training (computationally expensive)
-  model: "DistMult"  # PyKeen model type
-  embedding_dim: 64
-  learning_rate: 0.01
-  num_epochs: 50
-  early_stopping_patience: 5
-```
-
-When enabled, the pipeline:
-1. Trains a KGE model on all entity-relation triples
-2. Computes cosine similarity between connected entities
-3. Uses similarities as edge weights for Leiden community detection
 
 ### Community Detection (Optimized)
 
@@ -235,12 +215,11 @@ The `KnowledgePipeline` class in `graphgen.orchestrator.py` defines the sequence
 1. **Lexical Graph Building**: Document parsing and chunking
 2. **Entity Extraction**: NLP-based entity and relation extraction
 3. **Semantic Enrichment**: RAG embeddings and entity resolution
-4. **KGE Training** (optional): PyKeen embedding generation
-5. **Community Detection**: Leiden algorithm with optional KGE weights
-6. **Topic Analysis** (optional): Statistical separation tests
-7. **Pruning**: Graph cleanup
-8. **Upload**: Database persistence
-9. **Artifacts**: GraphML and report generation
+4. **Community Detection**: Leiden algorithm
+5. **Topic Analysis** (optional): Statistical separation tests
+6. **Pruning**: Graph cleanup
+7. **Upload**: Database persistence
+8. **Artifacts**: GraphML and report generation
 
 ---
 

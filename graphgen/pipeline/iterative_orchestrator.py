@@ -20,7 +20,9 @@ from graphgen.pipeline.community.detection import CommunityDetector
 from graphgen.pipeline.community.subcommunities import add_enhanced_community_attributes_to_graph
 from graphgen.pipeline.graph_cleaning.resolution import resolve_entities_semantically
 from graphgen.pipeline.summarization.core import generate_community_summaries
-from graphgen.pipeline.analysis.topic_separation import generate_topic_separation_report
+from graphgen.analytics.reporting import generate_topic_separation_report
+from graphgen.analytics.metrics import calculate_node2vec_significance
+from graphgen.analytics.visualizer import plot_node2vec_impact
 from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
 from graphgen.config.llm import get_langchain_llm
 from graphgen.config.schema import GraphSchema
@@ -141,43 +143,53 @@ class IterativeOrchestrator:
             generate_rag_embeddings(ctx.graph, node_types=['ENTITY_CONCEPT'])
             resolve_entities_semantically(ctx.graph, similarity_threshold=self.settings.processing.similarity_threshold)
             
-            # Initialize baseline modularity
-            modularity_baseline = 0.0
+            # 6. Community Detection
+            # --- BASELINE (Unweighted) ---
+            # Create a temporary unweighted view/copy for baseline detection
+            # Just stripping weights from entity edges
+            baseline_graph = ctx.graph.copy()
+            for u, v, d in baseline_graph.edges(data=True):
+                if d.get('graph_type') == 'entity_relation':
+                    d['weight'] = 1.0
+            
+            detector = CommunityDetector(self.settings.community)
+            baseline_res = detector.detect_communities(baseline_graph)
+            modularity_baseline = baseline_res.get('modularity', 0.0)
+            logger.info(f"Baseline Modularity (Unweighted): {modularity_baseline:.4f}")
+            del baseline_graph # Cleanup
 
-            # 5. KGE & Edge Weighting (New)
-            if self.settings.kge.enabled:
-                # Calculate baseline modularity BEFORE KGE edge weighting
-                detector_base = CommunityDetector(self.settings.community)
-                base_results = detector_base.detect_communities(ctx.graph)
-                modularity_baseline = base_results.get('modularity', 0.0)
-                logger.info(f"Baseline Modularity (No KGE): {modularity_baseline:.4f}")
-
-                from graphgen.pipeline.embeddings.kge import (
-                    train_global_kge, 
-                    compute_edge_weights_from_kge, 
-                    store_embeddings_in_graph
+            # --- WEIGHTED (Node2Vec) ---
+            if self.settings.community.node2vec_enabled:
+                from graphgen.pipeline.embeddings.node2vec_wrapper import compute_node2vec_weights
+                
+                logger.info("Computing Node2Vec weights...")
+                # Compute weights
+                weights = compute_node2vec_weights(
+                    ctx.graph, 
+                    dimensions=self.settings.community.node2vec_dimensions,
+                    walk_length=self.settings.community.node2vec_walk_length,
+                    num_walks=self.settings.community.node2vec_num_walks,
+                    seed=self.settings.iterative.random_seed + i
                 )
                 
-                logger.info("Training KGE model for community detection...")
-                kge_embeddings = train_global_kge(ctx.graph, self.settings.kge)
-                
-                if kge_embeddings:
-                    store_embeddings_in_graph(ctx.graph, kge_embeddings)
-                    compute_edge_weights_from_kge(ctx.graph, kge_embeddings)
-            
-            # 6. Community Detection
-            # Note: We re-run detection on the FULL graph every iteration
-            detector = CommunityDetector(self.settings.community)
-            comm_results = detector.detect_communities(ctx.graph)
-            
-            # --- VISUALIZATION (New) ---
-            if self.settings.kge.enabled:
-                from graphgen.pipeline.visualization.kge_plot import plot_kge_communities
-                plot_path = f"{self.settings.infra.output_dir}/iteration_{i+1}_kge_plot.png"
-                plot_kge_communities(ctx.graph, comm_results['assignments'], plot_path)
+                # Apply weights
+                weighted_count = 0
+                for (u, v), w in weights.items():
+                    if ctx.graph.has_edge(u, v):
+                        ctx.graph[u][v]['weight'] = w
+                        weighted_count += 1
+                logger.info(f"Applied Node2Vec weights to {weighted_count} edges.")
 
+            # Run Detection (Weighted if enabled, else defaults to 1.0)
+            comm_results = detector.detect_communities(ctx.graph)
             modularity = comm_results.get('modularity', 0.0)
             communities = comm_results['assignments']
+            
+            # Report Delta
+            if self.settings.community.node2vec_enabled:
+                delta = modularity - modularity_baseline
+                logger.info(f"Node2Vec Impact: Delta={delta:+.4f} (Baseline={modularity_baseline:.4f} -> Weighted={modularity:.4f})")
+
             
             # 7. Summarization
             # Detect subcommunities
@@ -275,6 +287,7 @@ class IterativeOrchestrator:
                             "node_id": node_id,
                             "node_type": node_type,
                             "title": data.get("title") or data.get("name"),
+                            "summary": data.get("summary"),
                             "community_id": data.get("community_id"),
                             "subcommunity_id": data.get("subcommunity_id"),
                             "embedding": embedding,
@@ -311,6 +324,51 @@ class IterativeOrchestrator:
             output_csv = f"{self.settings.infra.output_dir}/iterative_experiment_results.csv"
             df.to_csv(output_csv, index=False)
             logger.info(f"Experiment complete. Results saved to {output_csv}")
+            
+            # Node2Vec Statistical Analysis & Plotting
+            if self.settings.community.node2vec_enabled and len(self.results) >= 2:
+                try:
+                    # Significance Test
+                    n2v_stats = calculate_node2vec_significance(self.results)
+                    if n2v_stats:
+                        sig_msg = "SIGNIFICANT" if n2v_stats.get('significant') else "NOT SIGNIFICANT"
+                        logger.info(f"Node2Vec Improvement is {sig_msg} (p={n2v_stats.get('p_value'):.4f})")
+                        
+                        # Save stats to file
+                        stats_path = f"{self.settings.infra.output_dir}/node2vec_stats.json"
+                        with open(stats_path, 'w') as f:
+                            json.dump(n2v_stats, f, indent=2)
+
+                    # Plotting
+                    plot_node2vec_impact(
+                        self.results, 
+                        f"{self.settings.infra.output_dir}/node2vec_impact.png"
+                    )
+                except Exception as e:
+                    logger.error(f"Node2Vec analysis failed: {e}")
+            
+            # Node2Vec Statistical Analysis & Plotting
+            if self.settings.community.node2vec_enabled and len(self.results) >= 2:
+                try:
+                    # Significance Test
+                    n2v_stats = calculate_node2vec_significance(self.results)
+                    if n2v_stats:
+                        sig_msg = "SIGNIFICANT" if n2v_stats.get('significant') else "NOT SIGNIFICANT"
+                        logger.info(f"Node2Vec Improvement is {sig_msg} (p={n2v_stats.get('p_value'):.4f})")
+                        
+                        # Save stats to file
+                        stats_path = f"{self.settings.infra.output_dir}/node2vec_stats.json"
+                        with open(stats_path, 'w') as f:
+                            json.dump(n2v_stats, f, indent=2)
+
+                    # Plotting
+                    plot_node2vec_impact(
+                        self.results, 
+                        f"{self.settings.infra.output_dir}/node2vec_impact.png"
+                    )
+                except Exception as e:
+                    logger.error(f"Node2Vec analysis failed: {e}")
+
         except Exception as e:
             logger.error(f"Failed to save CSV: {e}")
 
