@@ -1,28 +1,27 @@
+"""GraphGen pipeline entry point."""
+
 import asyncio
 import logging
 import sys
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
-logger = logging.getLogger(__name__)
+from dotenv import load_dotenv
 
 from graphgen.config.settings import PipelineSettings
-# from graphgen.utils.graphdb.uploader import KnowledgeGraphUploader # Removed
 from graphgen.orchestrator import KnowledgePipeline
-from dotenv import load_dotenv
+from graphgen.utils.logging import configure_logging
+
+logger = logging.getLogger(__name__)
 
 # Load env variables
 load_dotenv()
 
-async def run_pipeline():
+async def run_pipeline() -> None:
+    configure_logging()
     try:
-        logger.info("Initializing GraphGen Pipeline...")
         settings = PipelineSettings.load() # loads from config.yaml and .env
+        configure_logging(debug=settings.debug)
+
+        logger.info("Initializing GraphGen Pipeline...")
         
         logger.info(f"Configuration loaded. Input: {settings.infra.input_dir}, Output: {settings.infra.output_dir}")
         
@@ -56,7 +55,7 @@ async def run_pipeline():
         logger.critical(f"Pipeline failed: {e}", exc_info=True)
         sys.exit(1)
 
-def main():
+def main() -> None:
     """Entry point for the console script."""
     asyncio.run(run_pipeline())
 

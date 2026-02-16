@@ -214,7 +214,7 @@ async def process_extraction_task(
     """Process a single chunk extraction task"""
     async with semaphore:
         # Use full chunk_id to avoid confusion with similar short IDs
-        logger.info(f"      🚀 Starting {task.chunk_id}")
+        logger.info(f"      Starting {task.chunk_id}")
         
         try:
             # 1. Run NER for this chunk (GLiNER/Spacy)
@@ -275,12 +275,12 @@ async def process_extraction_task(
             deps.graph.nodes[task.chunk_id]['extraction_successful'] = bool(raw_relations)
             rel_count = len(raw_relations)
             ent_count = len(set([x for tr in raw_relations for x in (tr[0], tr[2])])) if raw_relations else 0
-            logger.info(f"      ✅ Completed {task.chunk_id}: stored {ent_count} entities, {rel_count} relations")
+            logger.info(f"      Completed {task.chunk_id}: stored {ent_count} entities, {rel_count} relations")
             
             return {"success": True, "chunk_id": task.chunk_id}
             
         except Exception as e:
-            logger.error(f"      ❌ Failed {task.chunk_id}: {str(e)}", exc_info=True)
+            logger.error(f"      Failed {task.chunk_id}: {str(e)}", exc_info=True)
             return {"success": False, "error": str(e), "chunk_id": task.chunk_id}
 
 async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str, Any], extractor: BaseExtractor = None) -> Dict[str, Any]:

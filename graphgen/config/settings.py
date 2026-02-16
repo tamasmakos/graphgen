@@ -229,6 +229,17 @@ class AnalyticsSettings(BaseSettings):
         }
     )
 
+    # Thesis/provenance outputs
+    outputs_subdir: str = "thesis_outputs"
+    save_provenance: bool = True
+    save_sampling_manifest: bool = True
+    save_checkpoints: bool = True
+    save_topic_separation_inputs: bool = True
+    save_silhouette_samples: bool = True
+    save_anova_diagnostics: bool = True
+    save_manova_details: bool = True
+    save_raw_overlap_matrix: bool = True
+
     model_config = SettingsConfigDict(
         populate_by_name=True,
         extra="ignore"

@@ -1,37 +1,59 @@
+"""Metrics for graph quality and embedding analysis."""
+
+import logging
+from collections import defaultdict
+from typing import Any, Dict, List
+
 import networkx as nx
 import numpy as np
-import logging
-from typing import Dict, List, Any, Optional, Tuple
-from sklearn.metrics.pairwise import cosine_similarity
-from scipy.stats import pearsonr, spearmanr
 import pandas as pd
+from scipy.stats import pearsonr, spearmanr
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
 def calculate_modularity(graph: nx.Graph, communities: Dict[str, int]) -> float:
     """Calculate modularity of the graph given community assignments."""
     try:
-        # Create community sets
+        # Create community sets for nodes that exist in both graph and communities
         community_sets = defaultdict(set)
+        common_nodes = set()
+        
         for node, comm_id in communities.items():
             if node in graph:
                 community_sets[comm_id].add(node)
+                common_nodes.add(node)
         
-        # Filter out communities with no nodes in the graph (shouldn't happen but good for safety)
+        # Filter out empty communities
         valid_communities = [nodes for nodes in community_sets.values() if nodes]
         
         if not valid_communities:
+            logger.info(
+                "Skipping modularity: no valid communities (nodes=%d, communities=%d).",
+                graph.number_of_nodes(),
+                len(community_sets),
+            )
             return 0.0
             
-        return nx.community.modularity(graph, valid_communities)
-    except Exception as e:
-        logger.error(f"Failed to calculate modularity: {e}")
+        # Create subgraph of only the nodes involved in communities
+        # Modularity requires partition to cover all nodes in the graph
+        subgraph = graph.subgraph(common_nodes)
+        if len(subgraph) == 0:
+             return 0.0
+
+        return nx.community.modularity(subgraph, valid_communities)
+    except Exception:
+        logger.exception("Failed to calculate modularity.")
         return 0.0
 
 def calculate_topic_overlap(topic_embeddings: Dict[str, np.ndarray]) -> float:
     """Calculate average cosine similarity between all pairs of topic embeddings."""
     try:
         if len(topic_embeddings) < 2:
+            logger.info(
+                "Skipping topic overlap: need at least 2 embeddings (found=%d).",
+                len(topic_embeddings),
+            )
             return 0.0
         
         embeddings = list(topic_embeddings.values())
@@ -48,11 +70,12 @@ def calculate_topic_overlap(topic_embeddings: Dict[str, np.ndarray]) -> float:
         upper_tri = sim_matrix[np.triu_indices(len(sim_matrix), k=1)]
         
         if len(upper_tri) == 0:
+            logger.info("Skipping topic overlap: no pairwise similarities computed.")
             return 0.0
             
         return float(np.mean(upper_tri))
-    except Exception as e:
-        logger.error(f"Failed to calculate topic overlap: {e}")
+    except Exception:
+        logger.exception("Failed to calculate topic overlap.")
         return 0.0
 
 def analyze_modularity_vs_overlap(
@@ -63,7 +86,10 @@ def analyze_modularity_vs_overlap(
     Expects list of dicts with keys 'modularity' and 'topic_overlap'.
     """
     if len(results_history) < 3:
-        logger.warning("Not enough data points for correlation analysis (need >= 3).")
+        logger.info(
+            "Skipping correlation analysis: need >= 3 data points (found=%d).",
+            len(results_history),
+        )
         return {}
         
     stats = {}
@@ -81,13 +107,10 @@ def analyze_modularity_vs_overlap(
         stats['spearman_correlation'] = s_corr
         stats['spearman_p_value'] = s_val
         
-    except Exception as e:
-        logger.error(f"Correlation analysis failed: {e}")
+    except Exception:
+        logger.exception("Correlation analysis failed.")
         
     return stats
-
-from collections import defaultdict
-import os
 
 def evaluate_kge_model_quality(
     graph: nx.DiGraph, 
@@ -109,16 +132,23 @@ def evaluate_kge_model_quality(
     # Extract triples
     triples = []
     for u, v, data in graph.edges(data=True):
-         rel = data.get('relation_type') or data.get('label') or 'RELATED_TO'
-         triples.append((str(u), str(rel), str(v)))
+        rel = data.get('relation_type') or data.get('label') or 'RELATED_TO'
+        triples.append((str(u), str(rel), str(v)))
     
     if not triples:
+        logger.info("Skipping KGE evaluation: no triples found.")
         return {}
         
     df = pd.DataFrame(triples, columns=['head', 'relation', 'tail'])
     tf = TriplesFactory.from_labeled_triples(df[['head', 'relation', 'tail']].values)
     
     training, testing = tf.split([0.8, 0.2], random_state=42)
+    logger.info(
+        "KGE evaluation dataset: triples=%d, train=%d, test=%d.",
+        len(triples),
+        training.num_triples,
+        testing.num_triples,
+    )
     
     try:
         result = pipeline(
@@ -139,6 +169,6 @@ def evaluate_kge_model_quality(
         }
         return simple_metrics
         
-    except Exception as e:
-        logger.error(f"PyKEEN evaluation failed for {model_name}: {e}")
+    except Exception:
+        logger.exception("PyKEEN evaluation failed for %s.", model_name)
         return {}

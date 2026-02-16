@@ -1,9 +1,15 @@
+"""Iterative pipeline runner for batch experiments."""
+
 import logging
-import asyncio
+import json
+import os
+import hashlib
+from datetime import datetime
+from collections import defaultdict
+from typing import Any, Dict, List
+
 import networkx as nx
 import pandas as pd
-from collections import defaultdict
-from typing import List, Dict, Any
 
 from graphgen.config.settings import PipelineSettings
 from graphgen.types import PipelineContext
@@ -19,11 +25,17 @@ from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
 from graphgen.config.llm import get_langchain_llm
 from graphgen.config.schema import GraphSchema
 from graphgen.utils.utils import create_output_directory
+from graphgen.utils.provenance import (
+    write_analysis_run_manifest,
+    write_pipeline_config_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
 class IterativeOrchestrator:
-    def __init__(self, settings: PipelineSettings, uploader=None, extractor=None):
+    """Run the pipeline in iterative batches for experiments."""
+
+    def __init__(self, settings: PipelineSettings, uploader=None, extractor=None) -> None:
         self.settings = settings
         self.uploader = uploader
         self.extractor = extractor
@@ -32,15 +44,27 @@ class IterativeOrchestrator:
         self.loader = IterativeLoader(settings.infra.input_dir, settings.iterative, file_pattern)
         self.results = []
 
-    async def run(self):
+    async def run(self) -> None:
         if not self.settings.iterative.enabled:
             logger.info("Iterative mode disabled.")
             return
 
         logger.info(f"Starting Iterative Experiment: {self.settings.iterative.iterations} iterations, batch size {self.settings.iterative.batch_size}")
+        self.run_started_at = datetime.now()
 
         # Ensure output directory exists before any file writes
         create_output_directory(self.settings.infra.output_dir)
+        thesis_output_dir = f"{self.settings.infra.output_dir}/{self.settings.analytics.outputs_subdir}"
+        create_output_directory(thesis_output_dir)
+        if self.settings.analytics.save_provenance:
+            write_pipeline_config_snapshot(thesis_output_dir, self.settings)
+            write_analysis_run_manifest(
+                thesis_output_dir,
+                self.settings,
+                stage="started",
+                run_id="iterative",
+                started_at=self.run_started_at.isoformat(),
+            )
 
         # Initialize cumulative graph
         graph = nx.DiGraph() 
@@ -49,10 +73,10 @@ class IterativeOrchestrator:
         # Parse schema
         schema = None
         if self.settings.schema_config:
-             try:
-                 schema = GraphSchema(**self.settings.schema_config)
-             except Exception:
-                 pass
+            try:
+                schema = GraphSchema(**self.settings.schema_config)
+            except Exception:
+                pass
         
         config_dict = self.settings.model_dump()
 
@@ -66,6 +90,27 @@ class IterativeOrchestrator:
                 break
                 
             logger.info(f"Loaded batch of {len(segments)} segments.")
+
+            if self.settings.analytics.save_sampling_manifest:
+                samples_dir = os.path.join(thesis_output_dir, "samples")
+                create_output_directory(samples_dir)
+                sample_manifest = {
+                    "iteration": i + 1,
+                    "batch_size": len(segments),
+                    "random_seed": self.settings.iterative.random_seed + i,
+                    "samples": [
+                        {
+                            "segment_id": seg.segment_id,
+                            "filename": seg.metadata.get("filename"),
+                            "line_number": seg.line_number,
+                            "content_sha256": hashlib.sha256(seg.content.encode("utf-8")).hexdigest(),
+                        }
+                        for seg in segments
+                    ],
+                }
+                manifest_path = os.path.join(samples_dir, f"iteration_{i+1}_sample_manifest.json")
+                with open(manifest_path, "w", encoding="utf-8") as f:
+                    json.dump(sample_manifest, f, indent=2, ensure_ascii=False)
 
             # 2. Add to Graph (Lexical)
             by_file = defaultdict(list)
@@ -154,8 +199,6 @@ class IterativeOrchestrator:
             # 8. Graph Analytics
             # We explicitly run the topic separation statistical report for every iteration
             # as this is critical for the hypothesis testing.
-            from graphgen.pipeline.analysis.topic_separation import generate_topic_separation_report
-            
             stats_report = generate_topic_separation_report(
                 ctx.graph, 
                 f"{self.settings.infra.output_dir}/iteration_{i+1}_report.json",
@@ -169,28 +212,76 @@ class IterativeOrchestrator:
             # Extract silhouette scores if available
             entity_sil = 0.0
             if stats_report.get('entity_level'):
-                 entity_sil = stats_report['entity_level'].get('silhouette_score', 0.0) or 0.0
+                entity_sil = stats_report['entity_level'].get('silhouette_score', 0.0) or 0.0
                  
             community_sil = 0.0
             if stats_report.get('community_level'):
-                 community_sil = stats_report['community_level'].get('silhouette_score', 0.0) or 0.0
+                community_sil = stats_report['community_level'].get('silhouette_score', 0.0) or 0.0
                  
             subcommunity_sil = 0.0
             if stats_report.get('subcommunity_level'):
-                 subcommunity_sil = stats_report['subcommunity_level'].get('silhouette_score', 0.0) or 0.0
+                subcommunity_sil = stats_report['subcommunity_level'].get('silhouette_score', 0.0) or 0.0
 
             if self.settings.analytics.enabled:
-                 from graphgen.analytics.analyzer import GraphAnalyzer
-                 analyzer = GraphAnalyzer(
-                     config=self.settings.analytics.model_dump(), 
-                     output_base_dir=self.settings.infra.output_dir
-                 )
-                 # Reconstruct communities mapping
-                 communities_map = comm_results['assignments']
-                 
-                 # This runs other analytics (heatmap, KGE comparison if enabled)
-                 # We don't overwrite our stats with this
-                 _ = analyzer.run_full_analysis(ctx.graph, communities_map)
+                from graphgen.analytics.analyzer import GraphAnalyzer
+                analyzer = GraphAnalyzer(
+                    config=self.settings.analytics.model_dump(), 
+                    output_base_dir=self.settings.infra.output_dir
+                )
+                # Reconstruct communities mapping
+                communities_map = comm_results['assignments']
+                
+                # This runs other analytics (heatmap, KGE comparison if enabled)
+                # We don't overwrite our stats with this
+                _ = analyzer.run_full_analysis(ctx.graph, communities_map)
+
+            if self.settings.analytics.save_checkpoints:
+                checkpoints_dir = os.path.join(thesis_output_dir, "checkpoints")
+                create_output_directory(checkpoints_dir)
+
+                # Save GraphML checkpoint
+                graph_path = os.path.join(checkpoints_dir, f"iteration_{i+1}_graph.graphml")
+                clean_graph = ctx.graph.copy()
+                from datetime import date, datetime as dt
+                for _, d in clean_graph.nodes(data=True):
+                    for k, v in list(d.items()):
+                        if v is None:
+                            del d[k]
+                            continue
+                        if isinstance(v, (dict, list)):
+                            d[k] = json.dumps(v, ensure_ascii=False)
+                        elif isinstance(v, (date, dt)):
+                            d[k] = v.isoformat()
+                for _, _, d in clean_graph.edges(data=True):
+                    for k, v in list(d.items()):
+                        if v is None:
+                            del d[k]
+                            continue
+                        if isinstance(v, (dict, list)):
+                            d[k] = json.dumps(v, ensure_ascii=False)
+                        elif isinstance(v, (date, dt)):
+                            d[k] = v.isoformat()
+                nx.write_graphml(clean_graph, graph_path)
+
+                # Save compact topic snapshot
+                topics_snapshot = []
+                for node_id, data in ctx.graph.nodes(data=True):
+                    node_type = str(data.get("node_type", "")).upper()
+                    if node_type in {"COMMUNITY", "SUBCOMMUNITY", "TOPIC", "SUBTOPIC"}:
+                        embedding = data.get("embedding")
+                        if hasattr(embedding, "tolist"):
+                            embedding = embedding.tolist()
+                        topics_snapshot.append({
+                            "node_id": node_id,
+                            "node_type": node_type,
+                            "title": data.get("title") or data.get("name"),
+                            "community_id": data.get("community_id"),
+                            "subcommunity_id": data.get("subcommunity_id"),
+                            "embedding": embedding,
+                        })
+                snapshot_path = os.path.join(checkpoints_dir, f"iteration_{i+1}_topics.json")
+                with open(snapshot_path, "w", encoding="utf-8") as f:
+                    json.dump({"iteration": i + 1, "topics": topics_snapshot}, f, indent=2, ensure_ascii=False)
             
             result = {
                 'iteration': i + 1,
@@ -211,8 +302,8 @@ class IterativeOrchestrator:
             
             # Optional: Upload intermediate?
             if self.uploader:
-                 # maybe not upload every time for speed, unless requested
-                 pass
+                # Maybe not upload every time for speed, unless requested.
+                pass
 
         # Final Summary
         try:
@@ -232,19 +323,36 @@ class IterativeOrchestrator:
         except Exception as e:
             logger.warning(f"Thesis plot generation failed (non-critical): {e}")
 
+        if self.settings.analytics.save_provenance:
+            write_analysis_run_manifest(
+                thesis_output_dir,
+                self.settings,
+                stage="completed",
+                run_id="iterative",
+                started_at=self.run_started_at.isoformat(),
+                completed_at=datetime.now().isoformat(),
+                extra={
+                    "results": self.results,
+                    "graph": {
+                        "nodes": ctx.graph.number_of_nodes(),
+                        "edges": ctx.graph.number_of_edges(),
+                    },
+                },
+            )
+
         # Final Upload
         if self.uploader:
-             db_type = self.settings.infra.graph_db_type
-             logger.info(f"Uploading final iterative graph to {db_type}...")
-             try:
-                 if self.uploader.connect():
-                     # We use clean_start from settings. 
-                     # Since ctx.graph is cumulative, we can wipe and replace or just merge.
-                     # Wiping ensures consistency with the in-memory graph.
-                     self.uploader.upload(ctx.graph, clean_database=self.settings.infra.clean_start)
-                     self.uploader.close()
-                     logger.info("Upload complete.")
-                 else:
-                     logger.warning("Failed to connect to graph database for upload. Continuing without DB upload (output graphs saved locally).")
-             except Exception as e:
-                 logger.warning(f"Upload failed: {e}. Continuing without DB upload (output graphs saved locally).")
+            db_type = self.settings.infra.graph_db_type
+            logger.info(f"Uploading final iterative graph to {db_type}...")
+            try:
+                if self.uploader.connect():
+                    # We use clean_start from settings. 
+                    # Since ctx.graph is cumulative, we can wipe and replace or just merge.
+                    # Wiping ensures consistency with the in-memory graph.
+                    self.uploader.upload(ctx.graph, clean_database=self.settings.infra.clean_start)
+                    self.uploader.close()
+                    logger.info("Upload complete.")
+                else:
+                    logger.warning("Failed to connect to graph database for upload. Continuing without DB upload (output graphs saved locally).")
+            except Exception as e:
+                logger.warning(f"Upload failed: {e}. Continuing without DB upload (output graphs saved locally).")

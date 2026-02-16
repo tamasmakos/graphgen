@@ -1,17 +1,19 @@
-import networkx as nx
-import os
+"""Shared utilities for graph handling and filesystem setup."""
+
 import logging
-from typing import Dict, Any
+import os
+
+import networkx as nx
 
 logger = logging.getLogger(__name__)
 
-def create_output_directory(path: str):
+def create_output_directory(path: str) -> None:
     """Create directory if it doesn't exist."""
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
         logger.info(f"Created directory: {path}")
 
-def merge_node_into(graph: nx.DiGraph, source_node: str, target_node: str):
+def merge_node_into(graph: nx.DiGraph, source_node: str, target_node: str) -> None:
     """
     Merge source_node into target_node.
     

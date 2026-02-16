@@ -1,12 +1,18 @@
-from typing import List, Dict, Any, Optional, Union
+"""Schema models for the graph structure."""
+
+from typing import Dict, List
+
 from pydantic import BaseModel, Field
 
 class NodeSchema(BaseModel):
+    """Node schema definition for graph validation."""
     label: str
     attributes: List[str] = Field(default_factory=list)
-    source_type: str = "segment" # "segment", "document", "chunk", "derived"
+    # "segment", "document", "chunk", "derived"
+    source_type: str = "segment"
 
 class EdgeSchema(BaseModel):
+    """Edge schema definition for graph validation."""
     source_label: str
     target_label: str
     relation_type: str

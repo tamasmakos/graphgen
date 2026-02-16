@@ -9,6 +9,7 @@ import os
 import asyncio
 import uuid
 import logging
+from datetime import datetime
 import networkx as nx
 from typing import Dict, Any, List
 
@@ -21,7 +22,10 @@ from graphgen.pipeline.entity_relation.extractors import BaseExtractor
 from graphgen.pipeline.graph_cleaning.pruning import prune_graph
 from graphgen.utils.utils import create_output_directory
 from graphgen.utils.schema_utils import save_graph_schema
-# from graphgen.utils.health import check_falkordb
+from graphgen.utils.provenance import (
+    write_analysis_run_manifest,
+    write_pipeline_config_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,7 @@ class KnowledgePipeline:
         self.extractor = extractor
         self.run_id = str(uuid.uuid4())[:8]
         
-    async def run(self):
+    async def run(self) -> None:
         """
         Execute the full knowledge graph generation pipeline:
         1. Build Lexical Graph from Input Dir
@@ -57,7 +61,22 @@ class KnowledgePipeline:
         6. Upload to Graph Database
         7. Save Artifacts to Disk
         """
-        logger.info(f"🚀 Starting KnowledgePipeline run [{self.run_id}]...")
+        logger.info(f"Starting KnowledgePipeline run [{self.run_id}]...")
+        self.run_started_at = datetime.now()
+        output_dir = self.settings.infra.output_dir
+        create_output_directory(output_dir)
+
+        thesis_output_dir = os.path.join(output_dir, self.settings.analytics.outputs_subdir)
+        create_output_directory(thesis_output_dir)
+        if self.settings.analytics.save_provenance:
+            write_pipeline_config_snapshot(thesis_output_dir, self.settings)
+            write_analysis_run_manifest(
+                thesis_output_dir,
+                self.settings,
+                stage="started",
+                run_id=self.run_id,
+                started_at=self.run_started_at.isoformat(),
+            )
         
         # Preflight Checks
         self._run_preflight_checks()
@@ -77,10 +96,10 @@ class KnowledgePipeline:
             # Parse schema from settings
             schema = None
             if self.settings.schema_config:
-                 try:
-                     schema = GraphSchema(**self.settings.schema_config)
-                 except Exception as ex:
-                     logger.warning(f"Failed to parse schema: {ex}")
+                try:
+                    schema = GraphSchema(**self.settings.schema_config)
+                except Exception as ex:
+                    logger.warning(f"Failed to parse schema: {ex}")
 
             await self._step_lexical_graph(ctx, config_dict, schema=schema)
 
@@ -109,24 +128,56 @@ class KnowledgePipeline:
             self._step_save_artifacts(ctx)
         
         except Exception as e:
-            logger.critical(f"🔥 Pipeline [{self.run_id}] failed: {e}", exc_info=True)
+            logger.critical(f"Pipeline [{self.run_id}] failed: {e}", exc_info=True)
+            if self.settings.analytics.save_provenance:
+                write_analysis_run_manifest(
+                    thesis_output_dir,
+                    self.settings,
+                    stage="failed",
+                    run_id=self.run_id,
+                    started_at=self.run_started_at.isoformat(),
+                    completed_at=datetime.now().isoformat(),
+                    extra={"error": str(e)},
+                )
             raise
         
-        logger.info(f"✅ Pipeline Run [{self.run_id}] Finished Successfully.")
+        if self.settings.analytics.save_provenance:
+            write_analysis_run_manifest(
+                thesis_output_dir,
+                self.settings,
+                stage="completed",
+                run_id=self.run_id,
+                started_at=self.run_started_at.isoformat(),
+                completed_at=datetime.now().isoformat(),
+                extra={
+                    "stats": ctx.stats,
+                    "graph": {
+                        "nodes": ctx.graph.number_of_nodes(),
+                        "edges": ctx.graph.number_of_edges(),
+                    },
+                },
+            )
 
-    def _run_preflight_checks(self):
+        logger.info(f"Pipeline run [{self.run_id}] finished successfully.")
+
+    def _run_preflight_checks(self) -> None:
         """Check external dependencies."""
         logger.info("Performing preflight health checks...")
         
         # Basic check via uploader connectivity
         if self.uploader and not self.uploader.connect():
-             error_msg = f"Preflight check failed: Neo4j is not reachable."
-             logger.critical(f"{error_msg} Aborting pipeline.")
-             raise ConnectionError(error_msg)
+            error_msg = "Preflight check failed: Neo4j is not reachable."
+            logger.critical(f"{error_msg} Aborting pipeline.")
+            raise ConnectionError(error_msg)
         if self.uploader:
             self.uploader.close() # Close after check
 
-    async def _step_lexical_graph(self, ctx: PipelineContext, config: Dict[str, Any], schema: Any = None):
+    async def _step_lexical_graph(
+        self,
+        ctx: PipelineContext,
+        config: Dict[str, Any],
+        schema: Any = None,
+    ) -> None:
         input_dir = self.settings.infra.input_dir
         logger.info(f"Step 1: Building Lexical Graph from {input_dir}")
         
@@ -135,10 +186,10 @@ class KnowledgePipeline:
         ctx.stats['lexical'] = results
         logger.info(f"Lexical Graph Built: {results.get('documents_processed')} docs, {results.get('total_segments')} segments")
 
-    async def _step_extraction(self, ctx: PipelineContext, config: Dict[str, Any]):
+    async def _step_extraction(self, ctx: PipelineContext, config: Dict[str, Any]) -> None:
         if not self.extractor:
-             logger.warning("Step 2: Skipped (No extractor provided).")
-             return
+            logger.warning("Step 2: Skipped (No extractor provided).")
+            return
 
         logger.info("Step 2: Extracting Entities & Relations...")
         extract_results = await extract_all_entities_relations(ctx, config, extractor=self.extractor)
@@ -146,7 +197,7 @@ class KnowledgePipeline:
         ctx.stats['extraction'] = extract_results
         logger.info(f"Extraction Complete: {extract_results.get('successful')} successful chunks")
 
-    async def _step_enrichment(self, ctx: PipelineContext):
+    async def _step_enrichment(self, ctx: PipelineContext) -> None:
         try:
             from graphgen.pipeline.embeddings.rag import generate_rag_embeddings
             from graphgen.pipeline.graph_cleaning.resolution import resolve_entities_semantically
@@ -163,7 +214,7 @@ class KnowledgePipeline:
             logger.error(f"Semantic enrichment failed: {e}")
             ctx.add_error("enrichment", str(e))
 
-    async def _step_kge_training(self, ctx: PipelineContext):
+    async def _step_kge_training(self, ctx: PipelineContext) -> None:
         """Train PyKeen KGE and add edge weights for community detection."""
         if not self.settings.kge.enabled:
             logger.info("Step 3.5: KGE Training (Skipped - disabled in config)")
@@ -202,7 +253,7 @@ class KnowledgePipeline:
             logger.error(f"KGE training failed: {e}")
             ctx.add_error("kge", str(e))
 
-    async def _step_communities(self, ctx: PipelineContext, config: Dict[str, Any]):
+    async def _step_communities(self, ctx: PipelineContext, config: Dict[str, Any]) -> None:
         try:
             from graphgen.pipeline.community.detection import CommunityDetector
             from graphgen.pipeline.community.subcommunities import add_enhanced_community_attributes_to_graph
@@ -231,7 +282,7 @@ class KnowledgePipeline:
             logger.error(f"Community detection or summarization failed: {e}")
             ctx.add_error("communities", str(e))
 
-    async def _step_topic_analysis(self, ctx: PipelineContext):
+    async def _step_topic_analysis(self, ctx: PipelineContext) -> None:
         """Run statistical tests on topic embeddings."""
         if not self.settings.analysis.topic_separation_test:
             logger.info("Step 4.5: Topic Analysis (Skipped - disabled in config)")
@@ -267,13 +318,13 @@ class KnowledgePipeline:
             logger.error(f"Topic analysis failed: {e}")
             ctx.add_error("topic_analysis", str(e))
 
-    async def _step_pruning(self, ctx: PipelineContext):
+    async def _step_pruning(self, ctx: PipelineContext) -> None:
         logger.info("Step 5: Pruning Graph...")
         prune_stats = prune_graph(ctx.graph, {'pruning_threshold': 0.01})
         ctx.stats['pruning'] = prune_stats
         logger.info(f"Pruning Stats: {prune_stats}")
 
-    async def _step_upload(self, ctx: PipelineContext):
+    async def _step_upload(self, ctx: PipelineContext) -> None:
         if not self.uploader:
             return
             
@@ -290,10 +341,10 @@ class KnowledgePipeline:
                 logger.warning("Uploader could not connect.")
                 ctx.add_error("upload", "Could not connect")
         except Exception as e:
-             logger.error(f"Upload failed: {e}")
-             ctx.add_error("upload", str(e))
+            logger.error(f"Upload failed: {e}")
+            ctx.add_error("upload", str(e))
 
-    def _step_save_artifacts(self, ctx: PipelineContext):
+    def _step_save_artifacts(self, ctx: PipelineContext) -> None:
         output_dir = self.settings.infra.output_dir
         logger.info(f"Step 7: Saving artifacts to {output_dir}")
         create_output_directory(output_dir)

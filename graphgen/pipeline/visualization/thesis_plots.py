@@ -21,8 +21,11 @@ Usage:
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
+
+from graphgen.utils.logging import configure_logging  # type: ignore[import-not-found]
 
 import numpy as np
 import pandas as pd
@@ -47,6 +50,14 @@ try:
     SEABORN_AVAILABLE = True
 except ImportError:
     SEABORN_AVAILABLE = False
+
+try:
+    import networkx as nx
+    import powerlaw
+    NETWORK_ANALYSIS_AVAILABLE = True
+except ImportError:
+    NETWORK_ANALYSIS_AVAILABLE = False
+    logger.warning("networkx or powerlaw not available. Degree distribution plots cannot be generated.")
 
 # ---------------------------------------------------------------------------
 # Style Configuration
@@ -149,6 +160,28 @@ def _load_iteration_reports(output_dir: str) -> Dict[int, Dict]:
         except (ValueError, IndexError, json.JSONDecodeError) as e:
             logger.warning(f"Skipping report {report_file}: {e}")
     return reports
+
+
+def _load_silhouette_samples(diagnostics_dir: Path) -> List[Dict[str, Any]]:
+    """Load silhouette sample diagnostics from JSON files."""
+    samples: List[Dict[str, Any]] = []
+    for file_path in sorted(diagnostics_dir.glob("*_silhouette_samples.json")):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            iteration = None
+            match = re.search(r"iteration_(\d+)", file_path.stem)
+            if match:
+                iteration = int(match.group(1))
+            samples.append({
+                "file": str(file_path),
+                "iteration": iteration,
+                "level": payload.get("level"),
+                "samples": payload.get("samples", []),
+            })
+        except Exception as e:
+            logger.warning("Failed to load silhouette samples %s: %s", file_path, e)
+    return samples
 
 
 # ---------------------------------------------------------------------------
@@ -823,6 +856,53 @@ def plot_manova_components(reports: Dict[int, Dict], output_dir: str) -> Optiona
     return out_path
 
 
+def plot_silhouette_distributions(
+    diagnostics_dir: Path,
+    output_dir: str
+) -> Optional[str]:
+    """Plot silhouette score distributions per iteration and level."""
+    if not MATPLOTLIB_AVAILABLE:
+        return None
+    samples_payload = _load_silhouette_samples(diagnostics_dir)
+    if not samples_payload:
+        return None
+
+    # Build data by level and iteration
+    levels = ["ENTITY", "COMMUNITY", "SUBCOMMUNITY"]
+    data_by_level: Dict[str, Dict[int, List[float]]] = {lvl: {} for lvl in levels}
+    for payload in samples_payload:
+        level = payload.get("level")
+        if level not in levels:
+            continue
+        iteration = payload.get("iteration")
+        scores = [s.get("score") for s in payload.get("samples", []) if s.get("score") is not None]
+        if iteration is None or not scores:
+            continue
+        data_by_level[level].setdefault(iteration, []).extend(scores)
+
+    if not any(data_by_level.values()):
+        return None
+
+    fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(9, 10), sharex=True)
+    for ax, level in zip(axes, levels):
+        iterations = sorted(data_by_level[level].keys())
+        if not iterations:
+            ax.set_axis_off()
+            continue
+        values = [data_by_level[level][it] for it in iterations]
+        ax.boxplot(values, labels=[f"Iter {i}" for i in iterations], showfliers=False)
+        ax.set_title(f"Silhouette distributions: {level.lower()}")
+        ax.set_ylabel("Silhouette score")
+        ax.grid(True, axis="y", alpha=0.3)
+
+    axes[-1].set_xlabel("Iteration")
+    plt.tight_layout()
+    out_path = str(Path(output_dir) / "thesis_silhouette_distributions.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # Figure 8: Comprehensive Graph Growth
 # ---------------------------------------------------------------------------
@@ -882,6 +962,102 @@ def plot_graph_growth(df: pd.DataFrame, output_dir: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Figure 9: Degree Distribution (Scale-Free Analysis)
+# ---------------------------------------------------------------------------
+
+def plot_degree_distribution_comparison(output_dir: str) -> Optional[str]:
+    """
+    Generate Log-Log CCDF plot of degree distributions to demonstrate scale-free properties.
+    
+    Fits a power-law distribution to the node degrees of the entity-relation graphs
+    for each iteration. Scale-free networks (power law) are characteristic of
+    robust, complex systems (small-world, hub-and-spoke).
+    
+    Returns:
+        Path to saved figure, or None on failure.
+    """
+    if not MATPLOTLIB_AVAILABLE or not NETWORK_ANALYSIS_AVAILABLE:
+        return None
+
+    checkpoints_dir = Path(output_dir) / "thesis_outputs" / "checkpoints"
+    if not checkpoints_dir.exists():
+        logger.warning(f"Checkpoints directory not found: {checkpoints_dir}")
+        return None
+
+    graph_files = sorted(checkpoints_dir.glob("iteration_*_graph.graphml"))
+    if not graph_files:
+        logger.warning("No graph checkpoints found for degree distribution analysis.")
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Use iteration-specific colors if available, or fallback to palette
+    markers = ['o', 's', '^', 'D', 'v', '<', '>']
+    
+    has_data = False
+    
+    for i, filepath in enumerate(graph_files):
+        try:
+            # Extract iteration number
+            match = re.search(r"iteration_(\d+)", filepath.stem)
+            iteration = int(match.group(1)) if match else i + 1
+            
+            G = nx.read_graphml(str(filepath))
+            degrees = [d for n, d in G.degree()]
+            degrees = [d for d in degrees if d > 0] # powerlaw requires > 0
+            
+            if not degrees:
+                continue
+                
+            has_data = True
+            
+            # Fit power law
+            fit = powerlaw.Fit(degrees, discrete=True, verbose=False)
+            
+            # Determine color based on iteration index/scheme
+            color_idx = (iteration - 1) % len(COLORS) # Simple rotation
+            # Or use a specific map if defined, for now use standard rotation
+            color = plt.cm.viridis(0.2 + 0.6 * (i / max(1, len(graph_files)-1)))
+            
+            marker = markers[i % len(markers)]
+            
+            # Plot Data CCDF (Empirical)
+            fit.plot_ccdf(
+                ax=ax, color=color, linewidth=0, 
+                marker=marker, markersize=6, alpha=0.6, 
+                label=f'Iter {iteration} (Data)'
+            )
+            
+            # Plot Fit Line
+            fit.power_law.plot_ccdf(
+                ax=ax, color=color, linestyle='--', linewidth=2, 
+                label=f'Iter {iteration} Fit ($\\alpha={fit.alpha:.2f}$)'
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to process {filepath.name} for degree distribution: {e}")
+            continue
+
+    if not has_data:
+        plt.close(fig)
+        return None
+
+    ax.set_xlabel('Degree ($k$)')
+    ax.set_ylabel('CCDF $P(K \geq k)$')
+    ax.set_title('Degree Distribution Scale-Free Analysis')
+    ax.legend(loc='best', framealpha=0.9, fontsize=9)
+    ax.grid(True, which="major", ls="-", alpha=0.3)
+    ax.grid(True, which="minor", ls=":", alpha=0.1)
+    
+    plt.tight_layout()
+    out_path = str(Path(output_dir) / "thesis_degree_distribution.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    logger.info(f"Saved degree distribution plot: {out_path}")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Main Entry Point
 # ---------------------------------------------------------------------------
 
@@ -897,6 +1073,7 @@ def generate_all_thesis_plots(output_dir: str) -> Dict[str, Optional[str]]:
         - thesis_kge_modularity_impact.png
         - thesis_modularity_vs_separation.png
         - thesis_silhouette_dashboard.png
+        - thesis_silhouette_distributions.png
         - thesis_pca_scree.png
         - thesis_statistical_summary.png
         - thesis_kge_delta_separation.png
@@ -945,6 +1122,13 @@ def generate_all_thesis_plots(output_dir: str) -> Dict[str, Optional[str]]:
         results['pca_scree'] = plot_pca_scree(reports, output_dir)
         results['multivariate_anova_components'] = plot_manova_components(reports, output_dir)
 
+    # Degree Distribution Analysis (needs checkpoints)
+    results['degree_distribution'] = plot_degree_distribution_comparison(output_dir)
+
+    diagnostics_dir = output_path / "thesis_outputs" / "diagnostics"
+    if diagnostics_dir.exists():
+        results['silhouette_distributions'] = plot_silhouette_distributions(diagnostics_dir, output_dir)
+
     # Summary
     generated = {k: v for k, v in results.items() if v is not None}
     failed = {k for k, v in results.items() if v is None}
@@ -979,10 +1163,7 @@ if __name__ == "__main__":
     import argparse
     import sys
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    configure_logging()
 
     parser = argparse.ArgumentParser(
         description="Generate thesis-quality plots from GraphGen experiment data."
@@ -997,10 +1178,11 @@ if __name__ == "__main__":
     results = generate_all_thesis_plots(args.output_dir)
 
     if results:
-        print(f"\nGenerated {len([v for v in results.values() if v])} thesis plots:")
+        generated_count = len([v for v in results.values() if v])
+        logger.info("Generated %d thesis plots.", generated_count)
         for name, path in results.items():
             status = path if path else "FAILED"
-            print(f"  {name}: {status}")
+            logger.info("Plot result: %s=%s", name, status)
     else:
-        print("No plots generated. Check logs for errors.", file=sys.stderr)
+        logger.error("No plots generated. Check logs for errors.")
         sys.exit(1)

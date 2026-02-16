@@ -244,15 +244,15 @@ async def build_lexical_graph(deps: PipelineContext, input_dir: str, config: Dic
             extraction_config = extraction_config.model_dump()
             
         file_pattern = extraction_config.get('file_pattern')
+        all_files = sorted(os.listdir(input_dir))
         if file_pattern:
             # Process only the specified file
             import fnmatch
-            all_files = os.listdir(input_dir)
-            filenames = [f for f in all_files if fnmatch.fnmatch(f, file_pattern)]
+            filenames = sorted(f for f in all_files if fnmatch.fnmatch(f, file_pattern))
             logger.info(f"Processing specific file(s) matching pattern '{file_pattern}': {filenames}")
         else:
             # Process all .txt files
-            filenames = [f for f in os.listdir(input_dir) if f.endswith('.txt')]
+            filenames = sorted(f for f in all_files if f.endswith('.txt'))
             logger.info(f"Found {len(filenames)} files to process")
         
         # Apply test_mode document limit if configured

@@ -1,8 +1,11 @@
-from dataclasses import dataclass, field
+"""Data models for summarization tasks."""
+
+from dataclasses import dataclass
 from typing import List, Optional
 
 @dataclass
 class SummarizationTask:
+    """Represents a summarization unit for a community or subcommunity."""
     task_id: str
     community_id: int
     subcommunity_id: Optional[int]

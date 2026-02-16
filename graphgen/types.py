@@ -1,4 +1,7 @@
-from typing import List, Dict, Any, Optional
+"""Shared type definitions for pipeline data structures."""
+
+from typing import Any, Dict, List, Optional
+
 import networkx as nx
 from pydantic import BaseModel, Field
 
@@ -19,7 +22,8 @@ class SegmentData(BaseModel):
     segment_id: str
     content: str
     line_number: int
-    date: Optional[Any] = None # datetime.date but Any for simplicity in pydantic
+    # Keep as Any because some parsers attach datetime-like values.
+    date: Optional[Any] = None
     sentiment: float = 0.0
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -37,7 +41,7 @@ class PipelineContext:
         self.errors: Dict[str, List[str]] = {}
         self.total_segments: int = 0
         
-    def add_error(self, stage: str, message: str):
+    def add_error(self, stage: str, message: str) -> None:
         """Register a non-fatal error for reporting."""
         if stage not in self.errors:
             self.errors[stage] = []

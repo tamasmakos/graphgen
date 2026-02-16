@@ -32,6 +32,16 @@ You can run the pipeline directly via the command line interface:
 graphgen
 ```
 
+## Logging & Verbosity
+
+GraphGen uses Python logging and writes to stdout by default.
+
+- **Default level**: INFO
+- **Enable debug logs**: set `debug: true` under the root of `config.yaml`
+- **Docker**: view logs with `docker compose logs -f <service>`
+
+CLI utilities in `graphgen/tools/` and plotting scripts use the same logging format.
+
 ### Configuration
 
 GraphGen uses a dual configuration system:

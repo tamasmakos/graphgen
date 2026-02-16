@@ -1,1 +1,1 @@
-# Analysis pipeline subpackage
+"""Analysis pipeline subpackage."""

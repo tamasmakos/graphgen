@@ -19,7 +19,7 @@ import numpy as np
 import networkx as nx
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any, Optional, Iterable
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,58 @@ class TopicSeparationReport:
     overall_interpretation: str
 
 
+def _align_embeddings_and_labels(
+    embeddings: Dict[str, np.ndarray],
+    labels: Dict[str, int]
+) -> Tuple[List[str], np.ndarray, np.ndarray]:
+    common_ids = list(set(embeddings.keys()) & set(labels.keys()))
+    X = np.array([embeddings[id_] for id_ in common_ids])
+    y = np.array([labels[id_] for id_ in common_ids])
+    return common_ids, X, y
+
+
+def _compute_pca_scores(X: np.ndarray, n_components: int) -> Tuple[np.ndarray, np.ndarray]:
+    if not SKLEARN_AVAILABLE:
+        return np.empty((0, 0)), np.array([])
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    actual_components = min(n_components, X_scaled.shape[1], X_scaled.shape[0] - 1)
+    if actual_components < 1:
+        return np.empty((0, 0)), np.array([])
+    pca = PCA(n_components=actual_components)
+    X_pca = pca.fit_transform(X_scaled)
+    return X_pca, pca.explained_variance_ratio_
+
+
+def _anova_diagnostics(groups: Iterable[np.ndarray]) -> Dict[str, Any]:
+    results: Dict[str, Any] = {"group_sizes": [int(len(g)) for g in groups]}
+    if not SCIPY_AVAILABLE:
+        results["skipped"] = "scipy_unavailable"
+        return results
+
+    group_list = [g for g in groups if len(g) > 0]
+    if len(group_list) < 2:
+        results["skipped"] = "insufficient_groups"
+        return results
+
+    shapiro_results = []
+    for g in group_list:
+        if len(g) < 3:
+            shapiro_results.append({"n": int(len(g)), "statistic": None, "p_value": None})
+            continue
+        stat, p_val = stats.shapiro(g)
+        shapiro_results.append({"n": int(len(g)), "statistic": float(stat), "p_value": float(p_val)})
+    results["shapiro"] = shapiro_results
+
+    try:
+        lev_stat, lev_p = stats.levene(*group_list)
+        results["levene"] = {"statistic": float(lev_stat), "p_value": float(lev_p)}
+    except Exception as e:
+        results["levene"] = {"error": str(e)}
+
+    return results
+
+
 def compute_global_separation(embeddings: Dict[str, np.ndarray]) -> Tuple[float, float]:
     """
     Compute average pairwise cosine distance and similarity between all embeddings.
@@ -121,7 +173,7 @@ def compute_global_separation(embeddings: Dict[str, np.ndarray]) -> Tuple[float,
 
 def extract_topic_embeddings(
     graph: nx.DiGraph,
-    levels: List[str] = ["COMMUNITY", "SUBCOMMUNITY"]
+    levels: Optional[List[str]] = None
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """
     Extract embeddings for topic nodes (communities/subcommunities).
@@ -138,6 +190,9 @@ def extract_topic_embeddings(
     Returns:
         Dictionary: {level: {node_id: embedding}}
     """
+    if levels is None:
+        levels = ["COMMUNITY", "SUBCOMMUNITY"]
+
     result: Dict[str, Dict[str, np.ndarray]] = {}
     
     for level in levels:
@@ -240,8 +295,8 @@ def extract_entity_embeddings_and_labels(graph: nx.DiGraph) -> Tuple[Dict[str, n
                             if len(parts) > 1 and parts[1].isdigit():
                                 label = int(parts[1])
                                 break
-                        except:
-                            pass
+                        except (IndexError, ValueError) as exc:
+                            logger.debug("Failed to parse community label from %s: %s", succ, exc)
         
         if embedding is not None and label is not None:
             embeddings[node_id] = embedding
@@ -315,6 +370,59 @@ def run_silhouette_analysis(
         return None, None
 
 
+def run_silhouette_analysis_with_samples(
+    embeddings: Dict[str, np.ndarray],
+    labels: Dict[str, int]
+) -> Tuple[Optional[float], Optional[Dict[int, float]], Optional[List[Dict[str, Any]]]]:
+    """Run silhouette analysis and return per-sample scores."""
+    if not SKLEARN_AVAILABLE:
+        logger.warning("scikit-learn not available for silhouette analysis")
+        return None, None, None
+
+    common_ids = set(embeddings.keys()) & set(labels.keys())
+    if len(common_ids) < 3:
+        logger.warning(f"Insufficient samples for silhouette analysis: {len(common_ids)}")
+        return None, None, None
+
+    ids = list(common_ids)
+    X = np.array([embeddings[id_] for id_ in ids])
+    y = np.array([labels[id_] for id_ in ids])
+
+    unique_labels = np.unique(y)
+    if len(unique_labels) < 2:
+        logger.warning("Need at least 2 clusters for silhouette analysis")
+        return None, None, None
+
+    if len(unique_labels) >= len(X):
+        logger.info(f"Skipping silhouette analysis: too many clusters ({len(unique_labels)}) relative to samples ({len(X)})")
+        return None, None, None
+
+    try:
+        overall = silhouette_score(X, y, metric='cosine')
+        sample_scores = silhouette_samples(X, y, metric='cosine')
+
+        per_cluster = {}
+        for label in unique_labels:
+            mask = y == label
+            if np.sum(mask) > 0:
+                per_cluster[int(label)] = float(np.mean(sample_scores[mask]))
+
+        samples = [
+            {
+                "id": ids[idx],
+                "label": int(y[idx]),
+                "score": float(sample_scores[idx]),
+            }
+            for idx in range(len(ids))
+        ]
+
+        return overall, per_cluster, samples
+
+    except Exception as e:
+        logger.error(f"Silhouette analysis failed: {e}")
+        return None, None, None
+
+
 def run_anova_analysis(
     embeddings: Dict[str, np.ndarray],
     labels: Dict[str, int]
@@ -383,8 +491,9 @@ def run_anova_analysis(
 def run_multivariate_anova_on_pcs(
     embeddings: Dict[str, np.ndarray],
     labels: Dict[str, int],
-    n_components: int = 5
-) -> Optional[Dict[str, float]]:
+    n_components: int = 5,
+    return_details: bool = False
+) -> Optional[Dict[str, Any]]:
     """
     Multiple univariate ANOVAs on principal components with Bonferroni correction.
 
@@ -436,6 +545,7 @@ def run_multivariate_anova_on_pcs(
         f_stats = []
         p_values = []
         eta_squared_values = []
+        per_component = []
 
         for i in range(actual_components):
             groups = [X_pca[y == label, i] for label in unique_labels]
@@ -458,6 +568,12 @@ def run_multivariate_anova_on_pcs(
             ss_total = np.sum((all_vals - grand_mean) ** 2)
             eta_sq = ss_between / ss_total if ss_total > 0 else 0.0
             eta_squared_values.append(eta_sq)
+            per_component.append({
+                "component": int(i + 1),
+                "f_statistic": float(f_stat),
+                "p_value": float(p_val),
+                "eta_squared": float(eta_sq),
+            })
 
         if not p_values:
             return None
@@ -465,7 +581,7 @@ def run_multivariate_anova_on_pcs(
         # Combine using minimum p-value with Bonferroni correction
         min_p = min(p_values) * len(p_values)  # Bonferroni
 
-        return {
+        result: Dict[str, Any] = {
             "method": "multiple_univariate_anovas_on_pcs",
             "mean_f_statistic": float(np.mean(f_stats)),
             "min_p_value_corrected": float(min(min_p, 1.0)),
@@ -474,6 +590,12 @@ def run_multivariate_anova_on_pcs(
             "explained_variance_ratio": float(sum(pca.explained_variance_ratio_)),
             "note": "Not a true MANOVA; see docstring for limitations"
         }
+        if return_details:
+            result["per_component"] = per_component
+            result["explained_variance_ratio_by_component"] = [
+                float(v) for v in pca.explained_variance_ratio_
+            ]
+        return result
 
     except Exception as e:
         logger.error(f"Multivariate ANOVA on PCs failed: {e}")
@@ -720,7 +842,13 @@ def generate_topic_separation_report(
     
     # 1. Entity Level (Clustering Validity)
     ent_embeddings, ent_labels = extract_entity_embeddings_and_labels(graph)
-    if len(ent_embeddings) > 5 and len(set(ent_labels.values())) > 1:
+    entity_groups = len(set(ent_labels.values()))
+    if len(ent_embeddings) > 5 and entity_groups > 1:
+        logger.info(
+            "Entity-level analysis: samples=%d, groups=%d.",
+            len(ent_embeddings),
+            entity_groups,
+        )
         silhouette, silhouette_per_group = run_silhouette_analysis(ent_embeddings, ent_labels)
         manova = run_multivariate_anova_on_pcs(ent_embeddings, ent_labels)
         interpretation = interpret_separation(silhouette, None)
@@ -736,13 +864,23 @@ def generate_topic_separation_report(
             multivariate_anova_on_pcs=manova,
             interpretation=interpretation
         )
-        logger.info(f"Entity clustering silhouette: {silhouette}")
+        logger.info("Entity clustering silhouette: %s", silhouette)
+    else:
+        logger.info(
+            "Skipping entity-level analysis: need >5 samples and >=2 groups (samples=%d, groups=%d).",
+            len(ent_embeddings),
+            entity_groups,
+        )
 
     if "COMMUNITY" in all_embeddings and all_embeddings["COMMUNITY"]:
         community_result = analyze_level(all_embeddings["COMMUNITY"], "COMMUNITY")
+    else:
+        logger.info("Skipping community-level analysis: no community embeddings.")
     
     if "SUBCOMMUNITY" in all_embeddings and all_embeddings["SUBCOMMUNITY"]:
         subcommunity_result = analyze_level(all_embeddings["SUBCOMMUNITY"], "SUBCOMMUNITY")
+    else:
+        logger.info("Skipping subcommunity-level analysis: no subcommunity embeddings.")
     
     # Pairwise comparisons for communities
     pairwise = []
@@ -753,9 +891,11 @@ def generate_topic_separation_report(
             if node_id.startswith("COMMUNITY_"):
                 try:
                     labels[node_id] = int(node_id.split("_")[1])
-                except:
+                except (IndexError, ValueError) as exc:
+                    logger.debug("Failed to parse community label from %s: %s", node_id, exc)
                     continue
         pairwise = run_pairwise_comparisons(comm_embeddings, labels)
+        logger.info("Pairwise community comparisons completed: %d", len(pairwise))
     
     # PCA variance
     pca_variance = []
@@ -770,6 +910,8 @@ def generate_topic_separation_report(
     if combined_embeddings:
         pca_variance = compute_pca_variance(combined_embeddings)
         global_separation, global_overlap = compute_global_separation(combined_embeddings)
+    else:
+        logger.info("Skipping global separation/overlap: no embeddings available.")
     
     # Overall interpretation
     interpretations = []
@@ -809,6 +951,120 @@ def generate_topic_separation_report(
             return obj
     
     report_dict = to_dict(report)
+
+    # Optional diagnostics and input exports
+    outputs_subdir = getattr(config, "outputs_subdir", "thesis_outputs")
+    base_dir = Path(output_path).parent
+    thesis_dir = base_dir / outputs_subdir
+    prefix = Path(output_path).stem
+
+    def _labels_from_ids(node_ids: Iterable[str], level: str) -> Dict[str, int]:
+        labels: Dict[str, int] = {}
+        for node_id in node_ids:
+            if level == "COMMUNITY" and (node_id.startswith("COMMUNITY_") or node_id.startswith("TOPIC_")):
+                try:
+                    labels[node_id] = int(node_id.split("_")[1])
+                except (IndexError, ValueError):
+                    continue
+            elif level == "SUBCOMMUNITY" and (node_id.startswith("SUBCOMMUNITY_") or node_id.startswith("SUBTOPIC_")):
+                try:
+                    labels[node_id] = int(node_id.split("_")[1])
+                except (IndexError, ValueError):
+                    continue
+        return labels
+
+    level_data: Dict[str, Tuple[Dict[str, np.ndarray], Dict[str, int]]] = {}
+    if ent_embeddings and ent_labels:
+        level_data["ENTITY"] = (ent_embeddings, ent_labels)
+    if "COMMUNITY" in all_embeddings and all_embeddings["COMMUNITY"]:
+        comm_labels = _labels_from_ids(all_embeddings["COMMUNITY"].keys(), "COMMUNITY")
+        level_data["COMMUNITY"] = (all_embeddings["COMMUNITY"], comm_labels)
+    if "SUBCOMMUNITY" in all_embeddings and all_embeddings["SUBCOMMUNITY"]:
+        sub_labels = _labels_from_ids(all_embeddings["SUBCOMMUNITY"].keys(), "SUBCOMMUNITY")
+        level_data["SUBCOMMUNITY"] = (all_embeddings["SUBCOMMUNITY"], sub_labels)
+
+    if getattr(config, "save_topic_separation_inputs", False):
+        inputs_dir = thesis_dir / "inputs"
+        inputs_dir.mkdir(parents=True, exist_ok=True)
+        inputs_payload: Dict[str, Any] = {}
+        for level, (embeddings, labels) in level_data.items():
+            if not embeddings:
+                continue
+            ids = [id_ for id_ in embeddings.keys() if id_ in labels]
+            if not ids:
+                continue
+            X = np.array([embeddings[id_] for id_ in ids])
+            y = np.array([labels[id_] for id_ in ids])
+            inputs_payload[f"{level.lower()}_ids"] = np.array(ids)
+            inputs_payload[f"{level.lower()}_embeddings"] = X
+            inputs_payload[f"{level.lower()}_labels"] = y
+            try:
+                X_pca, evr = _compute_pca_scores(X, n_components=5)
+                inputs_payload[f"{level.lower()}_pc_scores"] = X_pca
+                inputs_payload[f"{level.lower()}_pc_explained_variance"] = evr
+                if X_pca.size > 0:
+                    inputs_payload[f"{level.lower()}_pc1_scores"] = X_pca[:, 0]
+            except Exception:
+                logger.exception("Failed to compute PCA scores for %s inputs.", level)
+        inputs_path = inputs_dir / f"{prefix}_topic_separation_inputs.npz"
+        np.savez_compressed(inputs_path, **inputs_payload)
+
+    if getattr(config, "save_silhouette_samples", False):
+        diag_dir = thesis_dir / "diagnostics"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        for level, (embeddings, labels) in level_data.items():
+            overall, per_cluster, samples = run_silhouette_analysis_with_samples(embeddings, labels)
+            if samples is None:
+                continue
+            payload = {
+                "level": level,
+                "overall_score": overall,
+                "per_cluster": per_cluster,
+                "samples": samples,
+            }
+            out_path = diag_dir / f"{prefix}_{level.lower()}_silhouette_samples.json"
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    if getattr(config, "save_anova_diagnostics", False):
+        diag_dir = thesis_dir / "diagnostics"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        for level, (embeddings, labels) in level_data.items():
+            if not SCIPY_AVAILABLE or not SKLEARN_AVAILABLE:
+                continue
+            common_ids = set(embeddings.keys()) & set(labels.keys())
+            if len(common_ids) < 3:
+                continue
+            ids = list(common_ids)
+            X = np.array([embeddings[id_] for id_ in ids])
+            y = np.array([labels[id_] for id_ in ids])
+            X_pca, _ = _compute_pca_scores(X, n_components=1)
+            if X_pca.size == 0:
+                continue
+            pc1 = X_pca[:, 0]
+            unique_labels = np.unique(y)
+            groups = [pc1[y == label] for label in unique_labels]
+            diagnostics = _anova_diagnostics(groups)
+            diagnostics["level"] = level
+            diagnostics["labels"] = [int(l) for l in unique_labels]
+            out_path = diag_dir / f"{prefix}_{level.lower()}_anova_diagnostics.json"
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(diagnostics, f, indent=2, ensure_ascii=False)
+
+    if getattr(config, "save_manova_details", False):
+        diag_dir = thesis_dir / "diagnostics"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        for level, (embeddings, labels) in level_data.items():
+            manova_details = run_multivariate_anova_on_pcs(
+                embeddings,
+                labels,
+                return_details=True,
+            )
+            if not manova_details:
+                continue
+            out_path = diag_dir / f"{prefix}_{level.lower()}_manova_pc_details.json"
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(manova_details, f, indent=2, ensure_ascii=False)
     
     # Save to file
     try:
@@ -819,7 +1075,7 @@ def generate_topic_separation_report(
             json.dump(report_dict, f, indent=2, ensure_ascii=False)
         
         logger.info(f"Topic separation report saved to: {output_path}")
-    except Exception as e:
-        logger.error(f"Failed to save report: {e}")
+    except Exception:
+        logger.exception("Failed to save report.")
     
     return report_dict

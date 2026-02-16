@@ -1,11 +1,13 @@
-import os
+"""Visualization utilities for analytics outputs."""
+
 import logging
-import json
+import os
+from typing import Dict, Optional
+
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +15,13 @@ def plot_topic_heatmap(
     topic_embeddings: Dict[str, np.ndarray], 
     topic_labels: Dict[str, str],
     output_path: str
-):
+) -> None:
     """
     Generate and save a heatmap of topic similarity.
     """
     try:
         if not topic_embeddings:
-            logger.warning("No topic embeddings for heatmap.")
+            logger.info("Skipping heatmap: no topic embeddings available.")
             return
 
         sorted_ids = sorted(topic_embeddings.keys())
@@ -39,19 +41,19 @@ def plot_topic_heatmap(
         plt.close()
         logger.info(f"Saved heatmap to {output_path}")
         
-    except Exception as e:
-        logger.error(f"Failed to plot heatmap: {e}")
+    except Exception:
+        logger.exception("Failed to plot heatmap.")
 
 def generate_interactive_explorer(
     graph: nx.DiGraph, 
     output_path: str,
-    communities: Dict[str, int] = None
-):
+    communities: Optional[Dict[str, int]] = None
+) -> None:
     """
     Generate an interactive HTML visualization using PyVis with search capability.
     """
     try:
-        from pyvis.network import Network
+        from pyvis.network import Network  # type: ignore[import-not-found]
     except ImportError:
         logger.warning("PyVis not installed. Skipping interactive explorer.")
         return

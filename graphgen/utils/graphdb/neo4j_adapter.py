@@ -53,18 +53,21 @@ def _clean_props_for_neo4j(props: Dict[str, Any]) -> Dict[str, Any]:
                     # Complex list -> JSON
                     try:
                         cleaned[key] = json.dumps(value, ensure_ascii=False)
-                    except:
+                    except (TypeError, ValueError) as exc:
+                        logger.debug("Failed to JSON-encode %s: %s", key, exc)
                         cleaned[key] = str(value)
             else:
-                 # Mixed list -> JSON
+                # Mixed list -> JSON
                 try:
                     cleaned[key] = json.dumps(value, ensure_ascii=False)
-                except:
+                except (TypeError, ValueError) as exc:
+                    logger.debug("Failed to JSON-encode %s: %s", key, exc)
                     cleaned[key] = str(value)
         elif isinstance(value, dict):
             try:
                 cleaned[key] = json.dumps(value, ensure_ascii=False)
-            except:
+            except (TypeError, ValueError) as exc:
+                logger.debug("Failed to JSON-encode %s: %s", key, exc)
                 cleaned[key] = str(value)
         else:
             cleaned[key] = str(value)

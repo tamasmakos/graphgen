@@ -1,20 +1,21 @@
-import networkx as nx
-from collections import defaultdict
-from typing import Dict, List
+"""Community hierarchy helpers for topic/subtopic nodes."""
+
 import logging
+from typing import Dict, Optional, Tuple
 
 import networkx as nx
-from typing import Dict, Tuple
-import logging
 
 logger = logging.getLogger(__name__)
 
-def add_enhanced_community_attributes_to_graph(graph: nx.DiGraph, communities: Dict[str, int], 
-                                             subcommunities: Dict[str, Tuple[int, int]]) -> nx.DiGraph:
+def add_enhanced_community_attributes_to_graph(
+    graph: nx.DiGraph,
+    communities: Dict[str, int],
+    subcommunities: Dict[str, Tuple[int, Optional[int]]],
+) -> nx.DiGraph:
     """Enhanced version that creates proper hierarchical connections: Entities→Subtopics→Parent Topics
     Expects subcommunities mapping: entity_id -> (parent_community_id, local_sub_id).
     """
-    logger.info("Creating PROPER topic hierarchy: Entities→Subtopics→Parent Topics...")
+    logger.info("Creating proper topic hierarchy: Entities->Subtopics->Parent Topics...")
     
     # Create ParentTopic nodes  
     topic_nodes_created = 0
@@ -110,8 +111,8 @@ def add_enhanced_community_attributes_to_graph(graph: nx.DiGraph, communities: D
     
     logger.info(f"Created {subtopic_nodes_created} Subtopic nodes")
     logger.info(f"Created {topic_nodes_created} Topic nodes") 
-    logger.info(f"Created {in_topic_edges_created} entity→subtopic IN_TOPIC relationships")
-    logger.info(f"Created {parent_topic_edges_created} subtopic→parent PARENT_TOPIC relationships")
-    logger.info("✅ PROPER HIERARCHY: Entities→Subtopics→Parent Topics")
+    logger.info(f"Created {in_topic_edges_created} entity->subtopic IN_TOPIC relationships")
+    logger.info(f"Created {parent_topic_edges_created} subtopic->parent PARENT_TOPIC relationships")
+    logger.info("Created hierarchy: Entities->Subtopics->Parent Topics")
     
     return graph

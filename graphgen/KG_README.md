@@ -1,58 +1,73 @@
 # GraphGen: Knowledge Graph Generation Pipeline
 
-The `graphgen` service is a high-performance ETL pipeline that transforms raw unstructured data into a structured Semantic Knowledge Graph.
+GraphGen transforms raw documents into a structured knowledge graph with optional analytics and Neo4j upload.
 
 ## Key Architectural Features
 
-- **Diamond Standard Isolation**: Strictly decoupled from the retrieval service.
-- **Dependency Injection**: The `KnowledgePipeline` orchestrator accepts its infrastructure (Uploader, Embedder) as injected dependencies.
-- **Strict Configuration**: Uses `pydantic-settings` to load configuration from environment variables, eliminating fragile YAML parsing.
-- **Hybrid Storage**: Offloads heavy embeddings to **PostgreSQL (pgvector)** while maintaining graph topology in **FalkorDB**.
+- **Dependency Injection**: The `KnowledgePipeline` orchestrator accepts uploader and extractor dependencies via its constructor.
+- **Config-driven**: Loads `config.yaml` + `.env` via `pydantic-settings` for consistent overrides.
+- **Modular Pipeline**: Each major step lives under `graphgen/pipeline/` for testable, isolated logic.
+- **Iterative Mode**: Optional batch-based experimentation for incremental graph evolution.
 
 ## Module Structure
 
 ```
-services/graphgen/src/
-├── main.py               # Composition Root (Wiring & Entrypoint)
-└── kg/
-    ├── pipeline/
-    │   ├── core.py       # KnowledgePipeline class (Orchestrator)
-    │   └── iterative.py  # Incremental update logic
-    ├── config/
-    │   ├── settings.py   # Pydantic Settings (Primary)
-    │   ├── schema.py     # Pydantic Models for internal types
-    │   └── compat.py     # Legacy config.yaml adapter
-    ├── graph/            # Extraction, resolution, and pruning logic
-    ├── falkordb/         # FalkorDB & Postgres storage drivers
-    ├── community/        # Leiden community detection
-    └── summarization/    # LLM-based community summaries
+graphgen/
+├── main.py                # Entrypoint
+├── orchestrator.py        # KnowledgePipeline (core orchestrator)
+├── analytics/             # Reports, metrics, visualizations
+├── config/                # Settings, schema, loaders
+├── pipeline/
+│   ├── lexical_graph_building/  # Segment/chunk graph construction
+│   ├── entity_relation/         # Entity/relationship extraction
+│   ├── embeddings/              # KGE/RAG embeddings
+│   ├── graph_cleaning/          # Pruning + resolution
+│   ├── community/               # Leiden detection + subcommunities
+│   ├── summarization/           # LLM summaries
+│   ├── analysis/                # Topic separation statistics
+│   └── visualization/           # Plots and reports
+├── utils/
+│   ├── graphdb/                 # Neo4j adapter
+│   └── parsers/                 # Input parsers
+└── tools/                   # CLI utilities
 ```
 
 ## Running the Pipeline
 
 ### 1. Configuration
-Set the required environment variables in a `.env` file at the service root:
+Set environment variables in `.env` at the repository root (examples):
 
 ```env
-FALKORDB_HOST=falkordb
-FALKORDB_PORT=6379
+NEO4J_HOST=neo4j
+NEO4J_PORT=7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
 OPENAI_API_KEY=sk-...
 INPUT_DIR=/app/input
+OUTPUT_DIR=/app/output
 ```
 
+Adjust pipeline behavior in `config.yaml` as needed (chunk sizes, thresholds, feature flags).
+
 ### 2. Execution
-Run the pipeline as a module from the `src` directory:
 
 ```bash
-python -m src.main
+python3 -m graphgen.main
 ```
 
 ## Pipeline Stages
 
-1. **Lexical Graph Construction**: Build document hierarchy (DAY/SEGMENT/CHUNK).
-2. **Entity Extraction**: Extract triplets and metadata using LLMs.
-3. **Pruning**: Remove low-value or redundant nodes.
-4. **Merge & Upload**: Incrementally merge the local graph into the FalkorDB database.
-5. **Entity Resolution**: Consolidate similar nodes based on semantic and text similarity.
-6. **Community Detection**: Cluster the graph into topics using the Leiden algorithm.
-7. **Summarization**: Generate hierarchical summaries for the detected topics.
+1. **Lexical Graph Construction**: Build document/segment/chunk hierarchy.
+2. **Entity Extraction**: Extract entities and relations using configured backends.
+3. **Semantic Enrichment**: Generate embeddings and resolve duplicates.
+4. **Community Detection**: Cluster entities into topics/subtopics.
+5. **Summarization**: Generate LLM summaries for communities.
+6. **Topic Analysis** (optional): Statistical separation tests on embeddings.
+7. **Pruning**: Cleanup and simplify low-value nodes/edges.
+8. **Upload**: Persist to Neo4j if configured.
+9. **Artifacts**: Save GraphML and analysis outputs.
+
+## Operational Notes
+
+- Logging defaults to INFO and stdout. Enable debug logs by setting `debug: true` in `config.yaml`.
+- See `/app/README.md` for full logging and troubleshooting guidance.

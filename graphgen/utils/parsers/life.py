@@ -6,8 +6,8 @@ Groups logs into time-based segments (episodes) based on a 5-minute gap threshol
 
 import csv
 import logging
-from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
+from typing import Dict, List, Optional
 from graphgen.utils.parsers.base import BaseDocumentParser
 from graphgen.types import SegmentData
 
@@ -26,8 +26,8 @@ class LifeLogParser(BaseDocumentParser):
         
         # Parse CSV content
         try:
-            # splitting by lines first to handle potential issues, but csv.DictReader expects iterable
-            lines = content.strip().split('\n')
+            # Split into lines so DictReader can iterate cleanly.
+            lines = content.strip().splitlines()
             reader = csv.DictReader(lines)
             
             for row in reader:
@@ -35,7 +35,7 @@ class LifeLogParser(BaseDocumentParser):
                 if not all(k in row for k in ['Time', 'Location', 'Audio', 'Image']):
                     continue
                 rows.append(row)
-        except Exception as e:
+        except csv.Error as e:
             logger.error(f"Failed to parse CSV content: {e}")
             return []
             
@@ -50,8 +50,8 @@ class LifeLogParser(BaseDocumentParser):
         try:
             rows.sort(key=lambda x: self._parse_time(x['Time']))
         except ValueError:
-             # Fallback if time format is inconsistent, trust order
-             pass
+            # If the time format is inconsistent, keep the original order.
+            logger.debug("Skipping time sort due to inconsistent time format.")
              
         segment_idx = 0
         
@@ -82,7 +82,7 @@ class LifeLogParser(BaseDocumentParser):
             
         # Add last segment
         if current_segment_rows:
-             segments.append(self._create_segment(current_segment_rows, doc_date, segment_idx))
+            segments.append(self._create_segment(current_segment_rows, doc_date, segment_idx))
              
         return segments
     
@@ -120,7 +120,12 @@ class LifeLogParser(BaseDocumentParser):
         # Summary content (could be improved explicitly later)
         # Concatenate audio for simple text representation
         # Truncate to avoid massive nodes if many rows
-        content_summary = "\n".join([f"[{r['Time'].split(' ')[1]}] {r['Location']}: {r['Audio'][:50]}..." for r in rows])
+        content_summary = "\n".join(
+            [
+                f"[{r['Time'].split(' ')[1]}] {r['Location']}: {r['Audio'][:50]}..."
+                for r in rows
+            ]
+        )
         
         # Identify locations in this segment
         locations = list(set([r['Location'] for r in rows if r['Location']]))
@@ -149,19 +154,19 @@ class LifeLogParser(BaseDocumentParser):
 
     def extract_date_from_content(self, content: str) -> Optional[str]:
         """Extract date from the first valid row in content."""
+        # Peek at the first few lines to find a valid date.
+        lines = content.strip().splitlines()
         try:
-            # Peek at the first few lines to find a valid date
-            lines = content.strip().split('\n')
             reader = csv.DictReader(lines)
             for row in reader:
-                 if 'Time' in row:
+                if 'Time' in row:
                     try:
                         dt = self._parse_time(row['Time'])
                         return dt.strftime("%Y-%m-%d")
                     except ValueError:
                         continue
-        except Exception:
-            pass
+        except csv.Error as exc:
+            logger.warning("Failed to parse CSV content for date extraction: %s", exc)
         return None
     
     def supports_file(self, filename: str) -> bool:
