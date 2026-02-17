@@ -174,7 +174,7 @@ class CommunityDetector:
                     res_best_mod = modularity
                     res_best_part = partition
             
-            logger.info(f"  Resolution {res:.2f}: Best Merged Modularity = {res_best_mod:.4f}")
+            logger.debug(f"  Resolution {res:.2f}: Best Merged Modularity = {res_best_mod:.4f}")
             
             if res_best_mod > best_modularity:
                 best_modularity = res_best_mod

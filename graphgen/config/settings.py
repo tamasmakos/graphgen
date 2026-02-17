@@ -71,7 +71,7 @@ class OntologySettings(BaseSettings):
     entity recognition based on ontology class definitions.
     """
     enabled: bool = False  # Toggle ontology label extraction
-    ontology_dir: str = "/app/input/ontology/cdm-4.13.2"  # Directory with RDF files
+    ontology_dir: str = "input/ontology/cdm-4.13.2"  # Directory with RDF files
     namespace_filter: Optional[str] = None  # Filter to specific namespace prefix
     merge_with_manual: bool = True  # Merge with gliner_labels or replace
     top_level_only: bool = True  # Only include classes with no named parents

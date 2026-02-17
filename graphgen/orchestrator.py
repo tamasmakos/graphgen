@@ -13,7 +13,7 @@ from datetime import datetime
 import networkx as nx
 from typing import Dict, Any, List
 
-from graphgen.types import PipelineContext
+from graphgen.data_types import PipelineContext
 from graphgen.config.settings import PipelineSettings
 from graphgen.utils.graphdb.neo4j_adapter import Neo4jGraphUploader
 from graphgen.pipeline.lexical_graph_building.builder import build_lexical_graph
@@ -158,7 +158,7 @@ class KnowledgePipeline:
 
     def _run_preflight_checks(self) -> None:
         """Check external dependencies."""
-        logger.info("Performing preflight health checks...")
+        logger.debug("Performing preflight health checks...")
         
         # Basic check via uploader connectivity
         if self.uploader and not self.uploader.connect():
@@ -187,7 +187,7 @@ class KnowledgePipeline:
             logger.warning("Step 2: Skipped (No extractor provided).")
             return
 
-        logger.info("Step 2: Extracting Entities & Relations...")
+        logger.debug("Step 2: Extracting Entities & Relations...")
         extract_results = await extract_all_entities_relations(ctx, config, extractor=self.extractor)
         
         ctx.stats['extraction'] = extract_results
@@ -198,7 +198,7 @@ class KnowledgePipeline:
             from graphgen.pipeline.embeddings.rag import generate_rag_embeddings
             from graphgen.pipeline.graph_cleaning.resolution import resolve_entities_semantically
             
-            logger.info("Step 3: Semantic Enrichment")
+            logger.debug("Step 3: Semantic Enrichment")
             
             logger.info("  3.1: Generating RAG Embeddings...")
             generate_rag_embeddings(ctx.graph)
@@ -217,7 +217,7 @@ class KnowledgePipeline:
             from graphgen.pipeline.summarization.core import generate_community_summaries
             from graphgen.config.llm import get_langchain_llm
             
-            logger.info("Step 4: Community Detection & Summarization")
+            logger.debug("Step 4: Community Detection & Summarization")
             
             logger.info("  4.1: Detecting Communities...")
             detector = CommunityDetector(self.settings.community)

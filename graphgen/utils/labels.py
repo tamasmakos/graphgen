@@ -10,6 +10,16 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LABELS = [
+    "Person", 
+    "Organization", 
+    "Location", 
+    "Policy", 
+    "Political Party", 
+    "Concept", 
+    "Event"
+]
+
 
 def resolve_entity_labels(extraction_config: Dict[str, Any]) -> List[str]:
     """
@@ -41,28 +51,36 @@ def resolve_entity_labels(extraction_config: Dict[str, Any]) -> List[str]:
     
     ontology_enabled = ontology_config.get('enabled', False)
     
+    result = []
     if not ontology_enabled:
         logger.debug(f"Using {len(manual_labels)} manual GLiNER labels")
-        return manual_labels
-    
-    # Extract labels from ontology
-    ontology_labels = _extract_ontology_labels(ontology_config)
-    
-    if not ontology_labels:
-        logger.warning("Ontology extraction enabled but no labels extracted, using manual labels")
-        return manual_labels
-    
-    # Merge or replace based on configuration
-    merge_with_manual = ontology_config.get('merge_with_manual', True)
-    
-    if merge_with_manual:
-        # Combine and deduplicate
-        combined = list(set(manual_labels + ontology_labels))
-        logger.info(f"Merged {len(manual_labels)} manual + {len(ontology_labels)} ontology = {len(combined)} total labels")
-        return sorted(combined)
+        result = manual_labels
     else:
-        logger.info(f"Using {len(ontology_labels)} ontology-derived labels (replacing manual)")
-        return ontology_labels
+        # Extract labels from ontology
+        ontology_labels = _extract_ontology_labels(ontology_config)
+        
+        if not ontology_labels:
+            logger.warning("Ontology extraction enabled but no labels extracted, using manual labels")
+            result = manual_labels
+        else:
+            # Merge or replace based on configuration
+            merge_with_manual = ontology_config.get('merge_with_manual', True)
+            
+            if merge_with_manual:
+                # Combine and deduplicate
+                combined = list(set(manual_labels + ontology_labels))
+                logger.info(f"Merged {len(manual_labels)} manual + {len(ontology_labels)} ontology = {len(combined)} total labels")
+                result = sorted(combined)
+            else:
+                logger.info(f"Using {len(ontology_labels)} ontology-derived labels (replacing manual)")
+                result = ontology_labels
+        
+    # Final safety check: if still empty, use defaults
+    if not result:
+        logger.warning(f"No entity labels resolved from manual or ontology sources. Using {len(DEFAULT_LABELS)} default labels.")
+        return DEFAULT_LABELS
+        
+    return result
 
 
 def _extract_ontology_labels(ontology_config: Dict[str, Any]) -> List[str]:
@@ -78,7 +96,7 @@ def _extract_ontology_labels(ontology_config: Dict[str, Any]) -> List[str]:
     try:
         from graphgen.utils.ontology_parser import OntologyLabelExtractor
         
-        ontology_dir = ontology_config.get('ontology_dir', '/app/input/ontology/cdm-4.13.2')
+        ontology_dir = ontology_config.get('ontology_dir', 'input/ontology/cdm-4.13.2')
         namespace_filter = ontology_config.get('namespace_filter')
         include_local_names = ontology_config.get('include_local_names', True)
         top_level_only = ontology_config.get('top_level_only', True)

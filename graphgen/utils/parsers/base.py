@@ -7,7 +7,7 @@ enabling a pluggable parser system that can handle various document formats.
 from abc import ABC, abstractmethod
 from typing import List, Optional
 from datetime import date
-from graphgen.types import SegmentData
+from graphgen.data_types import SegmentData
 
 
 class BaseDocumentParser(ABC):

@@ -3,7 +3,7 @@ import random
 import logging
 from typing import List, Dict, Any
 from datetime import datetime, date
-from graphgen.types import SegmentData
+from graphgen.data_types import SegmentData
 from graphgen.config.settings import IterativeSettings
 
 logger = logging.getLogger(__name__)

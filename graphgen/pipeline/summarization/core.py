@@ -1,569 +1,451 @@
 import os
 import logging
 import asyncio
+import json
+import random
 import networkx as nx
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Optional
-from langchain_core.prompts import ChatPromptTemplate
+from dataclasses import asdict
 
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
+
+import re
+from langchain_core.utils.json import parse_json_markdown
 
 from .models import SummarizationTask
 
 logger = logging.getLogger(__name__)
 
-# Configuration for topic summarization concurrency
-MAX_CONCURRENT_SUMMARIES = 10  # Adjust based on API rate limits
+# Configuration
+MAX_CONCURRENT_SUMMARIES = 5  # Reduced concurrency due to larger context
+CONTEXT_TOKEN_LIMIT = 8000     # Target context size (approx chars * 0.25)
+MAX_CHARS_PER_CHUNK = 2000    # Trucate individual chunks to avoid domination
+# XML Prompt Definition
+COMMUNITY_REPORT_PROMPT = """
+<system_role>
+You are an expert intelligence analyst specializing in graph-based pattern detection. 
+Your goal is to synthesize a comprehensive report on a specific community of entities within a larger network.
+</system_role>
 
-def truncate_text_for_llm(text: str, max_chars: int = 15000) -> str:
-    """Truncate text to fit LLM context window with graceful degradation"""
-    if len(text) <= max_chars:
-        return text
-    
-    # Try to break at sentence boundaries
-    sentences = text.split('. ')
-    truncated = ""
-    for sentence in sentences:
-        if len(truncated) + len(sentence) + 1 <= max_chars:
-            truncated += sentence + ". "
-        else:
-            break
-    
-    # If we couldn't fit any complete sentences, just truncate
-    if not truncated:
-        truncated = text[:max_chars]
-    
-    return truncated.strip()
+<task_description>
+Analyze the provided network community structure (entities and relationships) and the associated text chunks.
+Identify the core theme, key patterns, and significant insights that define this community.
+Produce a structured JSON report that captures the essence of this community.
+</task_description>
 
+<input_data_description>
+You will be provided with:
+1.  **Community Structure**: A list of key entities and their relationships within this group.
+2.  **text_chunks**: Raw text segments where these entities appear.
+3.  **Sub-community Summaries** (Optional): Summaries of smaller groups contained within this community (for hierarchical context).
+</input_data_description>
 
-async def generate_title_internal(llm: Any, text: str) -> str:
-    """Generate title for given text using LLM"""
-    
-    truncated_text = truncate_text_for_llm(text, max_chars=12000)
-    
-    title_prompt = ChatPromptTemplate.from_template(
-        """Please generate a concise, descriptive title (maximum 10 words) for the following content. 
-        The title should capture the main topic or theme regarding daily life, habits, or patterns without being too generic.
-        
-        Content:
-        {text}
-        
-        Title:"""
-    )
-    
-    for attempt in range(3):
-        try:
-            chain = title_prompt | llm
-            response = await chain.ainvoke({"text": truncated_text})
-            if hasattr(response, 'content'):
-                title = response.content
-            else:
-                title = str(response)
-            if len(title) > 100:
-                title = title[:97] + "..."
-            return title if title else "Untitled Topic"
-        except RuntimeError as e:
-            if "Event loop is closed" in str(e) and attempt < 2:
-                await asyncio.sleep(0.1 * (attempt + 1))
-                continue
-            logger.error(f"Title generation failed: {e}")
-            return "Untitled Topic"
-        except Exception as e:
-            if attempt < 2:
-                await asyncio.sleep(0.1 * (attempt + 1))
-                continue
-            logger.error(f"Title generation failed: {e}")
-            return "Untitled Topic"
-    return "Untitled Topic"
-
-def _clean_summary_output(text: str) -> str:
-    """Post-process LLM summaries to remove boilerplate phrases and quotes."""
-    if not text:
-        return ""
-    text = text.strip()
-
-    prefixes_to_remove = [
-        "Summary:", "summary:", "SUMMARY:",
-        "Here is the summary:", "Here is a summary of",
-        "Here is a concise summary of", "Here is a brief summary of",
-        "Here is a short summary of",
-        "Here's the summary:", "Here's a summary of",
-        "Here's a concise summary of", "Here's a brief summary of",
-        "Here's a short summary of",
-        "This is a summary of", "This is a concise summary of",
-        "This is a brief summary of", "This is a short summary of",
-        "Below is a summary of", "Below is a concise summary of",
-        "Below is a brief summary of", "Below is a short summary of",
-        "The following is a summary of",
-        "The following is a concise summary of",
-        "The following is a brief summary of",
-        "The following is a short summary of",
+<output_format>
+Return a **SINGLE JSON OBJECT** with the following structure:
+{{
+    "title": "A short, descriptive title for the community (3-10 words)",
+    "summary": "A comprehensive executive summary (3-5 sentences) covering the main topics, entities, and dynamics.",
+    "findings": [
+        {{
+            "summary": "Short title of a key insight/finding",
+            "explanation": "Detailed explanation of the finding, citing specific entities or patterns observed."
+        }},
+        ... (3-5 findings)
     ]
+}}
+</output_format>
 
-    for prefix in prefixes_to_remove:
-        if text.startswith(prefix):
-            text = text[len(prefix):].strip()
+<constraints>
+- **Grounding**: Ensure all findings are supported by the provided text chunks or relationships.
+- **Completeness**: Prefer synthesis over listing. Connect the dots between entities.
+- **Tone**: Professional, analytical, and objective.
+- **JSON Only**: Do not output any text outside the JSON block.
+- **Strict Syntax**: Ensure the JSON is valid and complete. Double-check for missing commas between array elements and fields.
+</constraints>
 
-    # Strip enclosing quotes if the whole summary is quoted
-    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
-        text = text[1:-1].strip()
+<context>
+{context_xml}
+</context>
+"""
 
-    return text.strip()
+def _truncate_text(text: str, max_chars: int) -> str:
+    return text[:max_chars] + "..." if len(text) > max_chars else text
 
+def _estimate_tokens(text: str) -> int:
+    # Rough estimate: 4 chars per token
+    return len(text) // 4
 
-async def summarize_text_internal(llm: Any, text: str) -> str:
-    """Generate summary for given text using LLM."""
-
-    truncated_text = truncate_text_for_llm(text, max_chars=12000)
-
-    summary_prompt = ChatPromptTemplate.from_template(
-        """Please provide a comprehensive summary (3-5 sentences) of the following content. 
-        Focus on average person topics - life related things, things to remember, things to notice, habits, patterns and so on.
+def _format_context_xml(task: SummarizationTask) -> str:
+    """Format the task data into XML sections for the prompt."""
+    xml_parts = []
+    current_tokens = 0
+    
+    # 1. Community Structure (Entities & Relations)
+    structure_xml = ["<community_structure>"]
+    
+    if task.entities:
+        structure_xml.append("  <entities>")
+        # Sort by degree if available, else random
+        sorted_ents = sorted(task.entities, key=lambda x: x.get('degree', 0), reverse=True)[:50]
+        for ent in sorted_ents:
+            structure_xml.append(f"    <entity name=\"{ent['name']}\" type=\"{ent.get('type', 'Unknown')}\" />")
+        structure_xml.append("  </entities>")
         
-        Content:
-        {text}
+    if task.relationships:
+        structure_xml.append("  <relationships>")
+        # Limit relationships
+        for src, rel, tgt in task.relationships[:50]: 
+            structure_xml.append(f"    <rel source=\"{src}\" type=\"{rel}\" target=\"{tgt}\" />")
+        structure_xml.append("  </relationships>")
+    
+    structure_xml.append("</community_structure>")
+    
+    structure_str = "\n".join(structure_xml)
+    xml_parts.append(structure_str)
+    current_tokens += _estimate_tokens(structure_str)
+    
+    # 2. Sub-community Summaries (if any)
+    if task.sub_summaries:
+        sub_xml = ["<sub_communities>"]
+        for sub in task.sub_summaries:
+            sub_xml.append(f"  <sub_community id=\"{sub.get('id')}\">\n    {sub.get('summary')}\n  </sub_community>")
+        sub_xml.append("</sub_communities>")
         
-        Summary:"""
-    )
+        sub_str = "\n".join(sub_xml)
+        # Check if we have space
+        if current_tokens + _estimate_tokens(sub_str) < CONTEXT_TOKEN_LIMIT:
+            xml_parts.append(sub_str)
+            current_tokens += _estimate_tokens(sub_str)
+        else:
+            # Truncate sub-summaries if needed
+            logger.warning(f"Truncating sub-summaries for {task.task_id} due to size.")
+            # Verify if at least one fits?
+            pass
 
-    for attempt in range(3):
-        try:
-            chain = summary_prompt | llm
-            response = await chain.ainvoke({"text": truncated_text})
-            if hasattr(response, 'content'):
-                summary = response.content
+    # 3. Text Chunks (Fill remaining space)
+    remaining_tokens = CONTEXT_TOKEN_LIMIT - current_tokens
+    if remaining_tokens > 500: # Ensure reasonable space left
+        xml_parts.append("<text_chunks>")
+        
+        chunks_added = 0
+        for i, text in enumerate(task.chunk_texts):
+            # Dynamic max chars based on remaining space? 
+            # Let's keep a hard chunk limit but strictly check total
+            clean_text = _truncate_text(text, MAX_CHARS_PER_CHUNK).replace("<", "&lt;").replace(">", "&gt;")
+            chunk_str = f"  <chunk id=\"{i}\">\n{clean_text}\n  </chunk>"
+            chunk_tokens = _estimate_tokens(chunk_str)
+            
+            if current_tokens + chunk_tokens < CONTEXT_TOKEN_LIMIT:
+                xml_parts.append(chunk_str)
+                current_tokens += chunk_tokens
+                chunks_added += 1
             else:
-                summary = str(response)
-            summary = _clean_summary_output(summary)
-            return summary if summary else "No summary available."
-        except RuntimeError as e:
-            if "Event loop is closed" in str(e) and attempt < 2:
-                await asyncio.sleep(0.1 * (attempt + 1))
-                continue
-            logger.error(f"Summary generation failed: {e}")
-            return "No summary available."
-        except Exception as e:
-            if attempt < 2:
-                await asyncio.sleep(0.1 * (attempt + 1))
-                continue
-            logger.error(f"Summary generation failed: {e}")
-            return "No summary available."
-    return "No summary available."
+                break
+                
+        xml_parts.append("</text_chunks>")
+    
+    return "\n".join(xml_parts)
 
-async def find_entities_for_community_async(graph: nx.DiGraph, topic_node_id: str) -> List[str]:
-    """Find entity IDs that belong to a topic.
-    
-    Traverses the hierarchy:
-      - Topic <- Subtopic <- Entity  (large communities with subcommunities)
-      - Topic <- Entity              (small communities connected directly)
-    
-    Entity node_type can be ENTITY, ENTITY_CONCEPT, PLACE, or NAMEDENTITY.
+# --- Graph Traversal & Data Collection ---
+
+def get_community_structure(graph: nx.DiGraph, community_nodes: List[str]) -> Tuple[List[Dict], List[Tuple]]:
     """
-    ENTITY_TYPES = {'ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY'}
-    entity_ids = []
+    Extract entities and internal relationships for a set of nodes in a community.
+    community_nodes: List of ENTITY node IDs in this community.
+    """
+    entities = []
+    relationships = []
     
-    if not graph.has_node(topic_node_id):
-        return entity_ids
+    # Create a set for fast lookup
+    comm_node_set = set(community_nodes)
     
-    # Structure is Entity -> Subtopic -> Topic  OR  Entity -> Topic (incoming edges)
-    for pred in graph.predecessors(topic_node_id):
-        node_data = graph.nodes[pred]
-        node_type = str(node_data.get('node_type', '')).upper()
+    # Get subgraph of these nodes
+    subgraph = graph.subgraph(community_nodes)
+    
+    # Extract Entities
+    for node_id in community_nodes:
+        if node_id in graph.nodes:
+            data = graph.nodes[node_id]
+            # Simple degree based on full graph to show global prominence
+            degree = graph.degree(node_id)
+            entities.append({
+                "name": data.get('name', node_id),
+                "id": node_id,
+                "type": data.get('ontology_class') or data.get('llm_type') or "Entity",
+                "degree": degree
+            })
+            
+    # Extract Internal Relationships
+    # using subgraph.edges(data=True) gets edges between the nodes in the set
+    for u, v, data in subgraph.edges(data=True):
+        rel_type = data.get('label') or data.get('relation_type') or "RELATED_TO"
+        relationships.append((u, rel_type, v))
         
-        # If predecessor is a Subtopic, look for its entity predecessors
-        if node_type == 'SUBTOPIC':
-            for sub_pred in graph.predecessors(pred):
-                sub_node_type = str(graph.nodes[sub_pred].get('node_type', '')).upper()
-                if sub_node_type in ENTITY_TYPES:
-                    entity_ids.append(sub_pred)
-                    
-        # If predecessor is directly an Entity (small communities without subtopics)
-        elif node_type in ENTITY_TYPES:
-            entity_ids.append(pred)
-    
-    return entity_ids
+    return entities, relationships
 
-async def find_chunks_for_entities_async(graph: nx.DiGraph, entity_ids: List[str]) -> List[str]:
-    """Find chunk IDs connected to the given entity IDs.
-    
-    Traverses: Chunk --[HAS_ENTITY]--> Entity (so Chunk is a predecessor of Entity).
-    Chunk node_type can be CHUNK or TEXTCHUNK depending on schema configuration.
+async def get_chunks_for_community(graph: nx.DiGraph, entity_ids: List[str]) -> Tuple[List[str], List[str]]:
     """
-    CHUNK_TYPES = {'CHUNK', 'TEXTCHUNK'}
+    Get text chunks connected to these entities.
+    Returns (chunk_ids, chunk_texts)
+    """
     chunk_ids = set()
+    chunk_texts = []
     
-    for entity_id in entity_ids:
-        if graph.has_node(entity_id):
-            # Structure is Chunk -> Entity (HAS_ENTITY edge direction)
-            for pred in graph.predecessors(entity_id):
-                node_data = graph.nodes[pred]
-                node_type = str(node_data.get('node_type', '')).upper()
-                if node_type in CHUNK_TYPES:
+    # Find chunks connected to these entities
+    # Chunks have HAS_ENTITY edge to Entity (Chunk -> Entity)
+    # OR Entity has edge from Chunk (Entity <- Chunk)
+    
+    # Optimization: Check predecessors of entities
+    for ent_id in entity_ids:
+        if ent_id in graph:
+            for pred in graph.predecessors(ent_id):
+                node = graph.nodes[pred]
+                # Check for CHUNK type
+                if str(node.get('node_type','')).upper() in ['CHUNK', 'TEXTCHUNK']:
                     chunk_ids.add(pred)
     
-    return list(chunk_ids)
+    # Collect text, sorted by speech_order/chunk_order if available
+    sorted_ids = sorted(list(chunk_ids)) # Simple sort for stability
+    
+    # Better sort: by time/order attributes
+    annotated_chunks = []
+    for cid in sorted_ids:
+        data = graph.nodes[cid]
+        order = (data.get('speech_order', 0), data.get('chunk_order', 0))
+        annotated_chunks.append((order, cid, data.get('text', '')))
+    
+    annotated_chunks.sort(key=lambda x: x[0])
+    
+    final_ids = [x[1] for x in annotated_chunks]
+    final_texts = [x[2] for x in annotated_chunks if x[2]]
+    
+    return final_ids, final_texts
 
-async def sort_chunks_by_global_order_async(graph: nx.DiGraph, chunk_ids: List[str]) -> List[str]:
-    """Sort chunks by their global order (speech_order, chunk_order)"""
+async def collect_task_for_node(graph: nx.DiGraph, node_id: str, is_topic: bool) -> Optional[SummarizationTask]:
+    """Build a SummarizationTask for a TOPIC or SUBTOPIC node."""
+    node_data = graph.nodes[node_id]
     
-    chunk_data = []
-    for chunk_id in chunk_ids:
-        if graph.has_node(chunk_id):
-            node_data = graph.nodes[chunk_id]
-            speech_order = node_data.get('speech_order', 0)
-            chunk_order = node_data.get('chunk_order', 0)
-            chunk_data.append((chunk_id, speech_order, chunk_order))
+    # Parse ID
+    # TOPIC_X -> comm_id=X
+    # SUBTOPIC_X_Y -> comm_id=X, sub_id=Y
     
-    # Sort by speech_order first, then chunk_order
-    chunk_data.sort(key=lambda x: (x[1], x[2]))
-    
-    return [chunk_id for chunk_id, _, _ in chunk_data]
+    try:
+        parts = node_id.split('_')
+        community_id = int(parts[1])
+        subcommunity_id = int(parts[2]) if not is_topic and len(parts) > 2 else None
+    except (IndexError, ValueError):
+        logger.error(f"Invalid node format: {node_id}")
+        return None
 
-async def concatenate_chunk_texts_async(graph: nx.DiGraph, chunk_ids: List[str]) -> str:
-    """Concatenate text from multiple chunks in order"""
+    # Identify member entities
+    # For SUBTOPIC: Entity -> IN_TOPIC -> SUBTOPIC (predecessors of subtopic)
+    # For TOPIC: Entity -> IN_TOPIC -> TOPIC (predecessors of topic)
+    # NOTE: The check 'IN_TOPIC' logic depends on how subcommunities.py built it.
+    # It created Entity -> Subtopic and Subtopic -> Parent Topic
     
-    texts = []
-    for chunk_id in chunk_ids:
-        if graph.has_node(chunk_id):
-            node_data = graph.nodes[chunk_id]
-            chunk_text = node_data.get('text', '')
-            if chunk_text:
-                texts.append(chunk_text)
+    member_entities = []
+    sub_summaries = []
     
-    return ' '.join(texts)
+    if is_topic:
+        # TOPIC receives edges from SUBTOPICS (Parent -> Child relation reversed in graph? No, usually Child -> Parent for hierarchy)
+        # subcommunities.py: graph.add_edge(sub_node_id, topic_node_id, label="PARENT_TOPIC")
+        # So Topic predecessors are Subtopics AND stray Entities
+        
+        for pred in graph.predecessors(node_id):
+            p_data = graph.nodes[pred]
+            p_type = str(p_data.get('node_type', '')).upper()
+            
+            if p_type == 'SUBTOPIC':
+                # Grab the summary from the subtopic if it exists
+                if p_data.get('summary'):
+                    sub_summaries.append({
+                        "id": pred, 
+                        "summary": p_data.get('summary')
+                    })
+                # We do NOT add subtopic's entities to the Parent's direct entity list 
+                # to avoid overwhelming the parent prompt. Parent relies on Sub-summaries.
+                # UNLESS the parent has very few subtopics.
+                
+            elif p_type in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY']:
+                member_entities.append(pred)
+                
+    else:
+        # SUBTOPIC predecessors are Entities
+        for pred in graph.predecessors(node_id):
+            p_data = graph.nodes[pred]
+            if str(p_data.get('node_type', '')).upper() in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY']:
+                member_entities.append(pred)
 
-async def collect_community_tasks_async(graph: nx.DiGraph) -> List[SummarizationTask]:
-    """Collect summarization tasks for all topic nodes"""
+    if not member_entities and not sub_summaries:
+        logger.warning(f"No content found for {node_id}. Predecessors: {list(graph.predecessors(node_id))}")
+        return None
+        
+    # Collect Structure (Entities & Relations)
+    # For Topics, we might want to include "Key Entities" from subtopics? 
+    # For now, let's stick to direct members + a sample if purely hierarchical.
+    # Actually, if a Topic has NO direct entities (only subtopics), we should probably fetch top entities from subtopics.
     
-    tasks = []
-    topic_nodes = []
+    if is_topic and not member_entities and sub_summaries:
+        # Fetch top entities from subtopics to populate structure
+        for sub in sub_summaries:
+            sid = sub['id']
+            # Get neighbors of subtopic (reverse IN_TOPIC)
+            # Predecessors of subtopic are entities
+            sub_ents = [p for p in graph.predecessors(sid) if str(graph.nodes[p].get('node_type','')).upper() in ['ENTITY_CONCEPT','ENTITY']]
+            member_entities.extend(sub_ents[:5]) # Take top 5 from each
+            
+    entities_data, relationships_data = get_community_structure(graph, member_entities)
     
-    # Find all topic nodes (TOPIC_X)
-    for node_id, node_data in graph.nodes(data=True):
-        if (node_data.get('node_type') == 'TOPIC' and 
-            isinstance(node_id, str) and 
-            node_id.startswith('TOPIC_')):
-            topic_nodes.append((node_id, node_data))
+    # Collect Chunks
+    chunk_ids, chunk_texts = await get_chunks_for_community(graph, member_entities)
     
-    logger.info(f"Found {len(topic_nodes)} topic nodes for summarization")
-    
-    for topic_node_id, topic_data in topic_nodes:
-        try:
-            # Extract topic ID from node name (e.g., "TOPIC_0" -> 0)
-            community_id = int(topic_node_id.split('_')[1])
-            
-            # Find entities for this topic
-            entity_ids = await find_entities_for_community_async(graph, topic_node_id)
-            
-            # Find chunks via entities (Entity <- Chunk via HAS_ENTITY)
-            chunk_ids = []
-            if entity_ids:
-                chunk_ids = await find_chunks_for_entities_async(graph, entity_ids)
-            
-            if not chunk_ids:
-                logger.warning(f"No chunks found for topic {community_id}, skipping")
-                continue
-            
-            # Sort chunks by global order
-            sorted_chunk_ids = await sort_chunks_by_global_order_async(graph, chunk_ids)
-            
-            # Concatenate chunk texts
-            concatenated_text = await concatenate_chunk_texts_async(graph, sorted_chunk_ids)
-            
-            if not concatenated_text.strip():
-                logger.warning(f"No text found for topic {community_id}")
-                continue
-            
-            # Create summarization task
-            task = SummarizationTask(
-                task_id=f"topic_{community_id}",
-                community_id=community_id,
-                subcommunity_id=None,
-                is_topic=True,
-                concatenated_text=concatenated_text,
-                chunk_ids=sorted_chunk_ids,
-                entity_ids=entity_ids
-            )
-            
-            tasks.append(task)
-            
-        except Exception as e:
-            logger.error(f"Error creating task for topic {topic_node_id}: {e}")
-            continue
-    
-    return tasks
+    return SummarizationTask(
+        task_id=node_id,
+        community_id=community_id,
+        subcommunity_id=subcommunity_id,
+        is_topic=is_topic,
+        chunk_texts=chunk_texts,
+        entities=entities_data,
+        relationships=relationships_data,
+        sub_summaries=sub_summaries,
+        chunk_ids=chunk_ids,
+        entity_ids=member_entities
+    )
 
-async def collect_subcommunity_tasks_async(graph: nx.DiGraph) -> List[SummarizationTask]:
-    """Collect summarization tasks for all subtopic nodes"""
-    
-    tasks = []
-    subtopic_nodes = []
-    
-    # Find all subtopic nodes (SUBTOPIC_X_Y)
-    for node_id, node_data in graph.nodes(data=True):
-        if (node_data.get('node_type') == 'SUBTOPIC' and 
-            isinstance(node_id, str) and 
-            node_id.startswith('SUBTOPIC_')):
-            subtopic_nodes.append((node_id, node_data))
-    
-    logger.info(f"Found {len(subtopic_nodes)} subtopic nodes for summarization")
-    
-    for subtopic_node_id, _ in subtopic_nodes:
-        try:
-            # Extract IDs from node name (e.g., "SUBTOPIC_0_1" -> topic=0, subtopic=1)
-            parts = subtopic_node_id.split('_')
-            if len(parts) >= 3:
-                community_id = int(parts[1])
-                subcommunity_id = int(parts[2])
-            else:
-                logger.warning(f"Invalid subtopic node name format: {subtopic_node_id}")
-                continue
-            
-            # Find entities for this subtopic
-            # Structure is Entity -> Subtopic (incoming edges)
-            entity_ids = []
-            if graph.has_node(subtopic_node_id):
-                for pred in graph.predecessors(subtopic_node_id):
-                    if str(graph.nodes[pred].get('node_type', '')).upper() in ['ENTITY', 'ENTITY_CONCEPT', 'PLACE', 'NAMEDENTITY']:
-                        entity_ids.append(pred)
-            
-            if not entity_ids:
-                logger.warning(f"No entities found for subtopic {community_id}_{subcommunity_id}")
-                continue
-            
-            # Find chunks for entities
-            chunk_ids = await find_chunks_for_entities_async(graph, entity_ids)
-            
-            if not chunk_ids:
-                logger.warning(f"No chunks found for subtopic {community_id}_{subcommunity_id}")
-                continue
-            
-            # Sort chunks by global order
-            sorted_chunk_ids = await sort_chunks_by_global_order_async(graph, chunk_ids)
-            
-            # Concatenate chunk texts
-            concatenated_text = await concatenate_chunk_texts_async(graph, sorted_chunk_ids)
-            
-            if not concatenated_text.strip():
-                logger.warning(f"No text found for subtopic {community_id}_{subcommunity_id}")
-                continue
-            
-            # Create summarization task
-            task = SummarizationTask(
-                task_id=f"subtopic_{community_id}_{subcommunity_id}",
-                community_id=community_id,
-                subcommunity_id=subcommunity_id,
-                is_topic=False,
-                concatenated_text=concatenated_text,
-                chunk_ids=sorted_chunk_ids,
-                entity_ids=entity_ids
-            )
-            
-            tasks.append(task)
-            
-        except Exception as e:
-            logger.error(f"Error creating task for subtopic {subtopic_node_id}: {e}")
-            continue
-    
-    return tasks
-
-async def generate_title_and_summary_with_semaphore(llm: Any, task: SummarizationTask, semaphore: asyncio.Semaphore) -> SummarizationTask:
-    """Generate title and summary for a task with semaphore control"""
-    
-    async with semaphore:
-        try:
-            logger.info(f"Processing task {task.task_id}...")
-            title_task = generate_title_internal(llm, task.concatenated_text)
-            summary_task = summarize_text_internal(llm, task.concatenated_text)
-            title, summary = await asyncio.gather(title_task, summary_task, return_exceptions=True)
-            
-            if isinstance(title, Exception):
-                logger.error(f"Title generation exception: {title}")
-                title = "Untitled Topic"
-            if isinstance(summary, Exception):
-                logger.error(f"Summary generation exception: {summary}")
-                summary = "No summary available."
-            
-            task.title = title
-            task.summary = summary
-            logger.info(f"Completed task {task.task_id}: '{title[:50]}...'")
-        except Exception as e:
-            logger.error(f"Failed to process task {task.task_id}: {e}")
-            task.title = "Processing Failed"
-            task.summary = f"Error during processing: {str(e)}"
-    
-    return task
-
-async def process_all_summarization_tasks_internal(llm: Any, tasks: List[SummarizationTask]) -> Dict[str, Any]:
-    """Process all summarization tasks in parallel with semaphore control"""
-    
-    if not tasks:
-        return {
-            "tasks_processed": 0,
-            "tasks_completed": 0,
-            "tasks_failed": 0,
-            "errors": ["No tasks to process"]
-        }
-    
-    logger.info(f"Processing {len(tasks)} summarization tasks with max concurrency {MAX_CONCURRENT_SUMMARIES}")
-    
-    # Create semaphore for controlling concurrency
+async def process_batch_tasks(llm: Any, tasks: List[SummarizationTask]) -> List[SummarizationTask]:
+    """Run a batch of summarization tasks concurrently."""
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
     
-    # Process all tasks concurrently
-    processed_tasks = await asyncio.gather(*[
-        generate_title_and_summary_with_semaphore(llm, task, semaphore)
-        for task in tasks
-    ])
-    
-    # Count results
-    completed = sum(1 for task in processed_tasks if task.title and task.title != "Processing Failed")
-    failed = len(processed_tasks) - completed
-    
-    logger.info(f"Summarization complete: {completed}/{len(processed_tasks)} successful")
-    
-    # Cleanup with retry
-    async def _cleanup_llm():
-        for i in range(3):
+    async def _run(task: SummarizationTask):
+        async with semaphore:
             try:
-                await asyncio.sleep(0.2 * (i + 1))
-                if hasattr(llm, 'async_client') and llm.async_client:
-                    await llm.async_client.aclose()
-                if hasattr(llm, 'client') and hasattr(llm.client, 'aclose'):
-                    await llm.client.aclose()
-                return
-            except (RuntimeError, AttributeError) as e:
-                if "Event loop is closed" in str(e) and i == 2:
-                    return
-            except Exception:
-                if i < 2:
-                    continue
-    
-    await _cleanup_llm()
-    
-    return {
-        "tasks_processed": len(processed_tasks),
-        "tasks_completed": completed,
-        "tasks_failed": failed,
-        "processed_tasks": processed_tasks,
-        "errors": []
-    }
-
-async def update_community_node_with_summary_async(graph: nx.DiGraph, topic_node_id: str,
-                                                  title: str = "", summary: str = "", chunk_ids: List[str] = None, 
-                                                  entity_ids: List[str] = None) -> str:
-    """Update a topic node with title and summary"""
-    
-    if not graph.has_node(topic_node_id):
-        logger.warning(f"Topic node {topic_node_id} not found in graph")
-        return topic_node_id
-    
-    # Update node data
-    node_data = graph.nodes[topic_node_id]
-    if title:
-        node_data['title'] = title
-        node_data['name'] = title  # Set name field to title
-    if summary:
-        node_data['summary'] = summary
-    if chunk_ids:
-        node_data['chunk_ids'] = chunk_ids
-    if entity_ids:
-        node_data['entity_ids'] = entity_ids
-    
-    # Mark as updated
-    node_data['has_summary'] = True
-    node_data['updated_at'] = datetime.now().isoformat()
-    
-    logger.info(f"Updated {topic_node_id} with title: '{title[:50]}...'")
-    
-    return topic_node_id
-
-async def create_all_topic_nodes(graph: nx.DiGraph, processed_tasks: List[SummarizationTask]) -> Dict[str, Any]:
-    """Create topic and subtopic nodes from processed tasks"""
-    
-    topics_updated = 0
-    subtopics_updated = 0
-    
-    for task in processed_tasks:
-        try:
-            if task.is_topic:
-                # Update topic node
-                topic_node_id = f"TOPIC_{task.community_id}"
-                await update_community_node_with_summary_async(
-                    graph, topic_node_id, task.title, task.summary, 
-                    task.chunk_ids, task.entity_ids
-                )
-                topics_updated += 1
-            else:
-                # Update subtopic node
-                subtopic_node_id = f"SUBTOPIC_{task.community_id}_{task.subcommunity_id}"
-                await update_community_node_with_summary_async(
-                    graph, subtopic_node_id, task.title, task.summary, 
-                    task.chunk_ids, task.entity_ids
-                )
-                subtopics_updated += 1
+                # Format Prompt
+                context_xml = _format_context_xml(task)
+                formatted_prompt = COMMUNITY_REPORT_PROMPT.format(context_xml=context_xml)
                 
-        except Exception as e:
-            logger.error(f"Failed to update node for task {task.task_id}: {e}")
+                # Invoke LLM
+                response = await llm.ainvoke(formatted_prompt)
+                content = response.content if hasattr(response, 'content') else str(response)
+                
+                # Robust parsing
+                try:
+                    # attempt 1: parse_json_markdown
+                    try:
+                        data = parse_json_markdown(content)
+                    except Exception:
+                        # attempt 2: try manual comma fix for common LLM error: } { -> }, {
+                        fixed_content = re.sub(r'\}\s*\{', '}, {', content)
+                        data = parse_json_markdown(fixed_content)
+                    
+                    if not isinstance(data, dict):
+                         # attempt 3: find { ... } and parse
+                         match = re.search(r'\{.*\}', content, re.DOTALL)
+                         if match:
+                             data = json.loads(match.group(0))
+                         else:
+                             raise ValueError("No JSON object found in output")
+                             
+                    task.title = data.get('title', 'Untitled')
+                    task.summary = data.get('summary', '')
+                    task.findings = data.get('findings', [])
+                    
+                    # Store full structured report
+                    task.structured_report = data.get('findings', [])
+                    
+                    logger.info(f"Generated report for {task.task_id}: {task.title}")
+                    
+                except Exception as parse_err:
+                    logger.error(f"JSON Parse Error for {task.task_id}: {parse_err}")
+                    logger.debug(f"Raw response for {task.task_id}:\n{content}")
+                    
+                    # Fallback
+                    task.title = "Analysis Partially Failed"
+                    task.summary = f"Could not parse LLM response. Error: {str(parse_err)}"
+                    # Try to regex out the title if possible
+                    title_match = re.search(r'"title":\s*"([^"]+)"', content)
+                    if title_match:
+                        task.title = title_match.group(1)
+                    
+            except Exception as e:
+                logger.error(f"Error processing {task.task_id}: {e}")
+                task.title = "Error"
+                task.summary = f"Processing error: {str(e)}"
     
-    logger.info(f"Updated {topics_updated} topics and {subtopics_updated} subtopics")
-    
-    return {
-        "topics_updated": topics_updated,
-        "subtopics_updated": subtopics_updated
-    }
+    await asyncio.gather(*[_run(t) for t in tasks])
+    return tasks
 
-async def get_all_topic_nodes_async(graph: nx.DiGraph) -> List[Tuple[str, Dict[str, Any]]]:
-    """Get all topic and subtopic nodes that have titles"""
-    
-    topic_nodes = []
-    
-    for node_id, node_data in graph.nodes(data=True):
-        if (node_data.get('node_type') in ['TOPIC', 'SUBTOPIC'] and 
-            node_data.get('title')):
-            topic_nodes.append((node_id, node_data))
-    
-    return topic_nodes
+async def update_graph_nodes(graph: nx.DiGraph, tasks: List[SummarizationTask]):
+    """Update graph nodes with the generated reports."""
+    for task in tasks:
+        node = graph.nodes[task.task_id]
+        
+        # Basic fields
+        node['title'] = task.title
+        node['summary'] = task.summary
+        node['name'] = task.title # Display name
+        
+        # Store detailed findings as JSON string (Neo4j/GraphML compatibility)
+        if task.findings:
+            node['findings_json'] = json.dumps(task.findings)
+            
+        # Metadata
+        node['entity_count'] = len(task.entity_ids)
+        node['relationship_count'] = len(task.relationships)
+        node['chunk_count'] = len(task.chunk_ids)
+        node['updated_at'] = datetime.now().isoformat()
+        node['has_summary'] = True
 
-
+# --- Main Pipeline ---
 
 async def generate_community_summaries(graph: nx.DiGraph, llm: Any) -> Dict[str, Any]:
     """
-    Generate summaries for topics and subtopics using the provided LLM.
-    This function orchestrates the summarization workflow:
-    1. Collect tasks
-    2. Process tasks
-    3. Update nodes
+    Main entry point.
+    1. Identify Subtopics -> Generate Summaries
+    2. Identify Topics -> Generate Summaries (using Subtopic context)
     """
     start_time = datetime.now()
     
-    try:
-        # Phase 1: Collect summarization tasks
-        logger.info("Phase 1: Collecting summarization tasks...")
-        community_tasks = await collect_community_tasks_async(graph)
-        subcommunity_tasks = await collect_subcommunity_tasks_async(graph)
-        
-        all_tasks = community_tasks + subcommunity_tasks
-        logger.info(f"Created {len(all_tasks)} summarization tasks")
-        
-        if not all_tasks:
-            return {"processed": 0, "errors": ["No tasks created"]}
+    # Identify nodes
+    subtopic_nodes = [n for n, d in graph.nodes(data=True) if d.get('node_type') == 'SUBTOPIC']
+    topic_nodes = [n for n, d in graph.nodes(data=True) if d.get('node_type') == 'TOPIC']
+    
+    logger.info(f"Found {len(subtopic_nodes)} Subtopics and {len(topic_nodes)} Topics.")
+    
+    # 1. Process Subtopics
+    logger.info("Phase 1: Summarizing Subtopics...")
+    subtopic_tasks = []
+    for node_id in subtopic_nodes:
+        task = await collect_task_for_node(graph, node_id, is_topic=False)
+        if task:
+            subtopic_tasks.append(task)
+        else:
+            logger.warning(f"Failed to create task for {node_id}")
+    
+    logger.info(f"Subtopic tasks collected: {len(subtopic_tasks)}")
             
-        # Phase 2: Process tasks
-        logger.info(f"Phase 2: Processing {len(all_tasks)} tasks...")
-        summary_result = await process_all_summarization_tasks_internal(llm, all_tasks)
-        
-        # Phase 3: Update nodes
-        logger.info("Phase 3: Updating topic nodes...")
-        creation_result = await create_all_topic_nodes(graph, summary_result["processed_tasks"])
-        
-        return {
-            "processing_time_seconds": (datetime.now() - start_time).total_seconds(),
-            "total_topics": len(community_tasks),
-            "total_subtopics": len(subcommunity_tasks),
-            "topics_updated": creation_result["topics_updated"],
-            "subtopics_updated": creation_result["subtopics_updated"]
-        }
-        
-    except Exception as e:
-        logger.error(f"Summarization failed: {e}", exc_info=True)
-        return {"error": str(e)}
+    await process_batch_tasks(llm, subtopic_tasks)
+    await update_graph_nodes(graph, subtopic_tasks)
+    
+    logger.info(f"Phase 1 Complete. {len(subtopic_tasks)} subtopics summarized.")
+    
+    # 2. Process Topics
+    # Now that Subtopics have summaries in the graph, we can collect them for Topics
+    logger.info("Phase 2: Summarizing Topics...")
+    topic_tasks = []
+    for node_id in topic_nodes:
+        task = await collect_task_for_node(graph, node_id, is_topic=True)
+        if task:
+            topic_tasks.append(task)
+            
+    await process_batch_tasks(llm, topic_tasks)
+    await update_graph_nodes(graph, topic_tasks)
+    
+    logger.info(f"Phase 2 Complete. {len(topic_tasks)} topics summarized.")
+    
+    return {
+        "processing_time": (datetime.now() - start_time).total_seconds(),
+        "subtopics_processed": len(subtopic_tasks),
+        "topics_processed": len(topic_tasks)
+    }

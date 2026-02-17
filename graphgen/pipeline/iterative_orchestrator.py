@@ -12,7 +12,7 @@ import networkx as nx
 import pandas as pd
 
 from graphgen.config.settings import PipelineSettings
-from graphgen.types import PipelineContext
+from graphgen.data_types import PipelineContext
 from graphgen.pipeline.iterative_loader import IterativeLoader
 from graphgen.pipeline.lexical_graph_building.builder import add_segments_to_graph
 from graphgen.pipeline.entity_relation.extraction import extract_all_entities_relations
@@ -162,7 +162,7 @@ class IterativeOrchestrator:
             if self.settings.community.node2vec_enabled:
                 from graphgen.pipeline.embeddings.node2vec_wrapper import compute_node2vec_weights
                 
-                logger.info("Computing Node2Vec weights...")
+                logger.debug("Computing Node2Vec weights...")
                 # Compute weights
                 weights = compute_node2vec_weights(
                     ctx.graph, 
@@ -178,7 +178,7 @@ class IterativeOrchestrator:
                     if ctx.graph.has_edge(u, v):
                         ctx.graph[u][v]['weight'] = w
                         weighted_count += 1
-                logger.info(f"Applied Node2Vec weights to {weighted_count} edges.")
+                logger.debug(f"Applied Node2Vec weights to {weighted_count} edges.")
 
             # Run Detection (Weighted if enabled, else defaults to 1.0)
             comm_results = detector.detect_communities(ctx.graph)
@@ -188,7 +188,7 @@ class IterativeOrchestrator:
             # Report Delta
             if self.settings.community.node2vec_enabled:
                 delta = modularity - modularity_baseline
-                logger.info(f"Node2Vec Impact: Delta={delta:+.4f} (Baseline={modularity_baseline:.4f} -> Weighted={modularity:.4f})")
+                logger.debug(f"Node2Vec Impact: Delta={delta:+.4f} (Baseline={modularity_baseline:.4f} -> Weighted={modularity:.4f})")
 
             
             # 7. Summarization
@@ -222,10 +222,6 @@ class IterativeOrchestrator:
             global_overlap = stats_report.get('global_overlap', 0.0) or 0.0
             
             # Extract silhouette scores if available
-            entity_sil = 0.0
-            if stats_report.get('entity_level'):
-                entity_sil = stats_report['entity_level'].get('silhouette_score', 0.0) or 0.0
-                 
             community_sil = 0.0
             if stats_report.get('community_level'):
                 community_sil = stats_report['community_level'].get('silhouette_score', 0.0) or 0.0
@@ -303,7 +299,6 @@ class IterativeOrchestrator:
                 'modularity_baseline': modularity_baseline,
                 'topic_separation': global_separation,
                 'topic_overlap': global_overlap,
-                'entity_silhouette': entity_sil,
                 'community_silhouette': community_sil,
                 'subcommunity_silhouette': subcommunity_sil,
                 'nodes': ctx.graph.number_of_nodes(),
@@ -311,7 +306,7 @@ class IterativeOrchestrator:
                 'communities': comm_results.get('community_count', 0)
             }
             self.results.append(result)
-            logger.info(f"Iteration {i+1} Stats: Modularity={modularity:.4f}, Separation={global_separation:.4f}, Silhouette(Ent/Com/Sub)={entity_sil:.3f}/{community_sil:.3f}/{subcommunity_sil:.3f}")
+            logger.info(f"Iteration {i+1} Stats: Modularity={modularity:.4f}, Separation={global_separation:.4f}, Silhouette(Com/Sub)={community_sil:.3f}/{subcommunity_sil:.3f}")
             
             # Optional: Upload intermediate?
             if self.uploader:

@@ -53,7 +53,6 @@ class TopicSeparationReport:
     """Complete statistical analysis report."""
     timestamp: str
     config: Dict[str, Any]
-    entity_level: Optional[LevelAnalysisResult]
     community_level: Optional[LevelAnalysisResult]
     subcommunity_level: Optional[LevelAnalysisResult]
     pairwise_comparisons: List[PairwiseComparison]
@@ -163,42 +162,7 @@ def extract_topic_embeddings(
     
     return result
 
-def extract_entity_embeddings_and_labels(graph: nx.DiGraph) -> Tuple[Dict[str, np.ndarray], Dict[str, int]]:
-    embeddings = {}
-    labels = {}
-    
-    for node_id, node_data in graph.nodes(data=True):
-        if str(node_data.get('node_type', '')).upper() not in ['ENTITY_CONCEPT', 'ENTITY', 'PLACE', 'NAMEDENTITY']:
-            continue
-            
-        embedding = None
-        if 'embedding' in node_data:
-            emb = node_data['embedding']
-            if isinstance(emb, list):
-                embedding = np.array(emb)
-            elif isinstance(emb, np.ndarray):
-                embedding = emb
-        
-        label = node_data.get('community_id')
-        if label is None:
-            for succ in graph.successors(node_id):
-                edge_data = graph.get_edge_data(node_id, succ)
-                if edge_data.get('label') in ['IN_TOPIC', 'IN_COMMUNITY']:
-                    succ_data = graph.nodes[succ]
-                    if succ_data.get('node_type') in ['TOPIC', 'COMMUNITY']:
-                        try:
-                            parts = str(succ).split('_')
-                            if len(parts) > 1 and parts[1].isdigit():
-                                label = int(parts[1])
-                                break
-                        except (IndexError, ValueError):
-                            pass
-        
-        if embedding is not None and label is not None:
-            embeddings[node_id] = embedding
-            labels[node_id] = int(label)
-            
-    return embeddings, labels
+
 
 def analyze_level(
     embeddings: Dict[str, np.ndarray],
@@ -261,26 +225,6 @@ def generate_topic_separation_report(
     
     community_result = None
     subcommunity_result = None
-    entity_result = None
-    
-    # Entity Level
-    ent_embeddings, ent_labels = extract_entity_embeddings_and_labels(graph)
-    if len(ent_embeddings) > 5 and len(set(ent_labels.values())) > 1:
-        silhouette, silhouette_per_group = run_silhouette_analysis(ent_embeddings, ent_labels)
-        manova = run_multivariate_anova_on_pcs(ent_embeddings, ent_labels)
-        interpretation = interpret_separation(silhouette, None)
-        
-        entity_result = LevelAnalysisResult(
-            level="ENTITY",
-            n_samples=len(ent_embeddings),
-            n_groups=len(set(ent_labels.values())),
-            silhouette_score=silhouette,
-            silhouette_per_group={str(k): v for k, v in (silhouette_per_group or {}).items()},
-            anova_f_statistic=None,
-            anova_p_value=None,
-            multivariate_anova_on_pcs=manova,
-            interpretation=interpretation
-        )
 
     if "COMMUNITY" in all_embeddings and all_embeddings["COMMUNITY"]:
         community_result = analyze_level(all_embeddings["COMMUNITY"], "COMMUNITY")
@@ -335,7 +279,6 @@ def generate_topic_separation_report(
     report = TopicSeparationReport(
         timestamp=datetime.now().isoformat(),
         config={"hierarchy_levels": levels},
-        entity_level=entity_result,
         community_level=community_result,
         subcommunity_level=subcommunity_result,
         pairwise_comparisons=pairwise,

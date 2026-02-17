@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import Dict, Any, List
 import networkx as nx
 
-from graphgen.types import PipelineContext, ChunkExtractionTask, SegmentData
+from graphgen.data_types import PipelineContext, ChunkExtractionTask, SegmentData
 from graphgen.pipeline.lexical_graph_building.chunking import process_document_splitting
 from graphgen.utils.parsers.life import LifeLogParser
 from graphgen.config.schema import GraphSchema

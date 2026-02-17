@@ -296,7 +296,6 @@ def plot_silhouette_dashboard(
 
     iterations = df['iteration'].values
     levels = [
-        ('entity_silhouette', 'Entity Level', COLORS['entity']),
         ('community_silhouette', 'Community Level', COLORS['community']),
         ('subcommunity_silhouette', 'Subcommunity Level', COLORS['subcommunity']),
     ]
@@ -339,8 +338,7 @@ def plot_silhouette_dashboard(
         rpt = reports[it]
         # Prefer subcommunity level (usually more groups)
         sub = rpt.get('subcommunity_level') or {}
-        ent = rpt.get('entity_level') or {}
-        if sub.get('silhouette_per_group') or ent.get('silhouette_per_group'):
+        if sub.get('silhouette_per_group'):
             final_report = rpt
             final_iter = it
             break
@@ -349,7 +347,6 @@ def plot_silhouette_dashboard(
         # Combine available per-group data
         per_group_data = []
         for level_key, level_label, color in [
-            ('entity_level', 'Entity', COLORS['entity']),
             ('subcommunity_level', 'Subcommunity', COLORS['subcommunity']),
         ]:
             level_data = final_report.get(level_key) or {}
@@ -507,7 +504,6 @@ def plot_statistical_summary(
 
         # Extract metrics from each level
         for level_key, level_label in [
-            ('entity_level', 'Entity'),
             ('subcommunity_level', 'Subcommunity'),
         ]:
             level = rpt.get(level_key) or {}
@@ -633,9 +629,6 @@ def plot_manova_components(reports: Dict[int, Dict], output_dir: str) -> Optiona
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
 
     iterations_list = []
-    entity_f = []
-    entity_p = []
-    entity_var = []
     sub_f = []
     sub_p = []
     sub_var = []
@@ -643,13 +636,6 @@ def plot_manova_components(reports: Dict[int, Dict], output_dir: str) -> Optiona
     for iteration in sorted(reports.keys()):
         rpt = reports[iteration]
         iterations_list.append(iteration)
-
-        # Entity level multivariate ANOVA on PCs (check both old and new field names)
-        ent_level = rpt.get('entity_level') or {}
-        ent = ent_level.get('multivariate_anova_on_pcs') or ent_level.get('manova_approximation') or {}
-        entity_f.append(ent.get('mean_f_statistic'))
-        entity_p.append(ent.get('min_p_value_corrected'))
-        entity_var.append(ent.get('explained_variance_ratio'))
 
         # Subcommunity level multivariate ANOVA on PCs
         sub_level = rpt.get('subcommunity_level') or {}
@@ -661,14 +647,8 @@ def plot_manova_components(reports: Dict[int, Dict], output_dir: str) -> Optiona
     iterations_arr = np.array(iterations_list)
 
     # Panel A: F-statistics
-    valid_ef = [(it, f) for it, f in zip(iterations_list, entity_f) if f is not None]
     valid_sf = [(it, f) for it, f in zip(iterations_list, sub_f) if f is not None]
 
-    if valid_ef:
-        ax1.plot(
-            [v[0] for v in valid_ef], [v[1] for v in valid_ef],
-            marker='o', color=COLORS['entity'], label='Entity Level', linewidth=2.0
-        )
     if valid_sf:
         ax1.plot(
             [v[0] for v in valid_sf], [v[1] for v in valid_sf],
@@ -682,14 +662,8 @@ def plot_manova_components(reports: Dict[int, Dict], output_dir: str) -> Optiona
     ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     # Panel B: P-values (log scale)
-    valid_ep = [(it, p) for it, p in zip(iterations_list, entity_p) if p is not None]
     valid_sp = [(it, p) for it, p in zip(iterations_list, sub_p) if p is not None]
 
-    if valid_ep:
-        ax2.semilogy(
-            [v[0] for v in valid_ep], [v[1] for v in valid_ep],
-            marker='o', color=COLORS['entity'], label='Entity Level', linewidth=2.0
-        )
     if valid_sp:
         ax2.semilogy(
             [v[0] for v in valid_sp], [v[1] for v in valid_sp],
@@ -728,7 +702,7 @@ def plot_silhouette_distributions(
         return None
 
     # Build data by level and iteration
-    levels = ["ENTITY", "COMMUNITY", "SUBCOMMUNITY"]
+    levels = ["COMMUNITY", "SUBCOMMUNITY"]
     data_by_level: Dict[str, Dict[int, List[float]]] = {lvl: {} for lvl in levels}
     for payload in samples_payload:
         level = payload.get("level")
@@ -743,8 +717,15 @@ def plot_silhouette_distributions(
     if not any(data_by_level.values()):
         return None
 
-    fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(9, 10), sharex=True)
-    for ax, level in zip(axes, levels):
+    # Filter to only levels with data
+    levels_with_data = [lvl for lvl in levels if data_by_level[lvl]]
+    if not levels_with_data:
+        return None
+
+    fig, axes = plt.subplots(nrows=len(levels_with_data), ncols=1, figsize=(9, 5 * len(levels_with_data)), sharex=True)
+    if len(levels_with_data) == 1:
+        axes = [axes]  # Make it iterable
+    for ax, level in zip(axes, levels_with_data):
         iterations = sorted(data_by_level[level].keys())
         if not iterations:
             ax.set_axis_off()

@@ -27,7 +27,7 @@ llm:
 extraction:
   chunk_size: 512
   chunk_overlap: 64
-  backend: "gliner"
+  backend: "dspy"
   gliner_model: "knowledgator/gliner-multitask-large-v0.5"
   device: "cuda"
   use_onnx: false
@@ -36,7 +36,7 @@ extraction:
     - "SUBCOMMUNITY"
   ontology:
     enabled: true
-    ontology_dir: "/app/input/ontology/cdm-4.13.2"
+    ontology_dir: "input/ontology/cdm-4.13.2"
     namespace_filter: null
     merge_with_manual: true
     top_level_only: true
@@ -74,6 +74,6 @@ analytics:
 # Iterative Experiment Configuration - Smoke Test
 iterative:
   enabled: true
-  batch_size: 3
-  iterations: 15
+  batch_size: 2
+  iterations: 20
   random_seed: 42

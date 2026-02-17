@@ -70,25 +70,47 @@ class GraphAnalyzer:
             logger.info("Topic overlap: %.4f", overlap)
 
             # Heatmap
+            # Heatmap and Detailed Analysis
             if self.config.get('visualization', {}).get('heatmap', True):
-                topic_labels = self._extract_topic_labels(graph)
-                plot_topic_heatmap(
-                    topic_embeddings,
-                    topic_labels,
-                    os.path.join(self.output_dir, "topic_similarity_heatmap.png")
-                )
+                # Separate embeddings by type
+                topic_embs = {k: v for k, v in topic_embeddings.items() if k.startswith("TOPIC_")}
+                subtopic_embs = {k: v for k, v in topic_embeddings.items() if k.startswith("SUBTOPIC_")}
+                
+                # Plot separate heatmaps (using IDs as labels)
+                if topic_embs:
+                    plot_topic_heatmap(
+                        topic_embs,
+                        {k: k for k in topic_embs.keys()}, # Use ID as label
+                        os.path.join(self.output_dir, "topic_similarity_heatmap.png"),
+                        title="Topic Similarity Heatmap"
+                    )
+                
+                if subtopic_embs:
+                    plot_topic_heatmap(
+                        subtopic_embs,
+                        {k: k for k in subtopic_embs.keys()}, # Use ID as label
+                        os.path.join(self.output_dir, "subtopic_similarity_heatmap.png"),
+                        title="Subtopic Similarity Heatmap"
+                    )
 
-            # Raw overlap matrix export
+            # Raw overlap matrix & Labels export
             if self.config.get("save_raw_overlap_matrix", False):
                 try:
                     from sklearn.metrics.pairwise import cosine_similarity
-                    labels = self._extract_topic_labels(graph)
-                    label_ids = list(topic_embeddings.keys())
-                    matrix = cosine_similarity(np.vstack([topic_embeddings[k] for k in label_ids]))
-                    np.save(os.path.join(self.output_dir, "topic_similarity_matrix.npy"), matrix)
-                    with open(os.path.join(self.output_dir, "topic_similarity_labels.json"), "w") as f:
-                        json.dump({k: labels.get(k, k) for k in label_ids}, f, indent=2)
-                    results["topic_similarity_matrix"] = "topic_similarity_matrix.npy"
+                    
+                    # Compute matrices if possible
+                    if topic_embeddings:
+                        label_ids = list(topic_embeddings.keys())
+                        matrix = cosine_similarity(np.vstack([topic_embeddings[k] for k in label_ids]))
+                        np.save(os.path.join(self.output_dir, "topic_similarity_matrix.npy"), matrix)
+                        results["topic_similarity_matrix"] = "topic_similarity_matrix.npy"
+
+                    # Generate detailed labels JSON
+                    detailed_labels = self._extract_topic_details(graph)
+                    
+                    with open(os.path.join(self.output_dir, "topic_similarity_labels.json"), "w", encoding='utf-8') as f:
+                        json.dump(detailed_labels, f, indent=2, ensure_ascii=False)
+                    
                     results["topic_similarity_labels"] = "topic_similarity_labels.json"
                 except Exception:
                     logger.exception("Failed to save raw overlap matrix.")
@@ -135,21 +157,51 @@ class GraphAnalyzer:
     def _extract_topic_embeddings(self, graph: nx.DiGraph) -> Dict[str, np.ndarray]:
         """Extract topic embeddings (from summary-based embedding when available)."""
         embeddings = {}
+        target_types = ('COMMUNITY', 'TOPIC', 'SUBCOMMUNITY', 'SUBTOPIC')
         for n, data in graph.nodes(data=True):
-            node_type = data.get('node_type')
-            if node_type not in ('COMMUNITY', 'TOPIC') or 'embedding' not in data:
+            node_type = str(data.get('node_type', '')).upper()
+            if node_type not in target_types:
                 continue
-            emb = data['embedding']
-            if isinstance(emb, list):
-                embeddings[n] = np.array(emb)
-            else:
-                embeddings[n] = emb
+                
+            if 'embedding' in data:
+                emb = data['embedding']
+                if isinstance(emb, list):
+                    embeddings[n] = np.array(emb)
+                else:
+                    embeddings[n] = emb
         return embeddings
 
-    def _extract_topic_labels(self, graph: nx.DiGraph) -> Dict[str, str]:
-        """Labels for topic nodes (title or node id)."""
-        labels = {}
+    def _extract_topic_details(self, graph: nx.DiGraph) -> Dict[str, Dict[str, Any]]:
+        """Extract detailed information for all topics and subtopics."""
+        details = {
+            "topics": {},
+            "subtopics": {}
+        }
+        
         for n, data in graph.nodes(data=True):
-            if data.get('node_type') in ('COMMUNITY', 'TOPIC'):
-                labels[n] = data.get('title') or data.get('name', n)
-        return labels
+            node_type = str(data.get('node_type', '')).upper()
+            
+            info = {
+                "id": n,
+                "title": data.get('title') or data.get('name', n),
+                "summary": data.get('summary', ''),
+                "findings": [],
+                "entity_count": data.get('entity_count', 0),
+                "chunk_count": data.get('chunk_count', 0)
+            }
+            
+            # Parse findings JSON if present
+            if 'findings_json' in data and data['findings_json']:
+                try:
+                    info['findings'] = json.loads(data['findings_json'])
+                except:
+                    pass
+            elif 'findings' in data:
+                 info['findings'] = data['findings']
+
+            if node_type == 'TOPIC' or node_type == 'COMMUNITY':
+                details["topics"][n] = info
+            elif node_type == 'SUBTOPIC' or node_type == 'SUBCOMMUNITY':
+                details["subtopics"][n] = info
+                
+        return details

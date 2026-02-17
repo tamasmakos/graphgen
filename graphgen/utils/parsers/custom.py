@@ -1,7 +1,7 @@
 import re
 from typing import List, Dict, Any, Optional
 from datetime import date
-from graphgen.types import SegmentData
+from graphgen.data_types import SegmentData
 from graphgen.utils.parsers.base import BaseDocumentParser
 
 class RegexParser(BaseDocumentParser):

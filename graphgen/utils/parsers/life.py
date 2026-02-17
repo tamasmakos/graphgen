@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
 from graphgen.utils.parsers.base import BaseDocumentParser
-from graphgen.types import SegmentData
+from graphgen.data_types import SegmentData
 
 logger = logging.getLogger(__name__)
 

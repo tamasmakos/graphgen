@@ -18,6 +18,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 
 from graphgen.config.llm import get_langchain_llm
+from graphgen.pipeline.entity_relation.dspy_module import GraphExtractorModule
+import dspy
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +181,134 @@ class LangChainExtractor(BaseExtractor):
         
         return [], []
 
+
+class DSPyExtractor(BaseExtractor):
+    """DSPy-based extractor."""
+
+    def __init__(self, config: Dict[str, Any]):
+        """Initialize with config."""
+        self.config = config
+        
+        # Configure DSPy with the LLM from config
+        llm_config = config.get('llm', {})
+        # Flatten if it's a pydantic model dump
+        if hasattr(llm_config, 'model_dump'):
+            llm_config = llm_config.model_dump()
+            
+        # Try to find the best model name from config
+        model = llm_config.get('extraction_model') or llm_config.get('base_model') or llm_config.get('model') or 'gpt-4o'
+        
+        # Check for Groq API Key
+        groq_api_key = None
+        infra_config = config.get('infra', {})
+        if hasattr(infra_config, 'model_dump'):
+            infra_config = infra_config.model_dump()
+            
+        # Try to get key from infra config or direct LLM config or env
+        val = infra_config.get('groq_api_key') or llm_config.get('groq_api_key')
+        if val:
+             if hasattr(val, 'get_secret_value'):
+                 groq_api_key = val.get_secret_value()
+             else:
+                 groq_api_key = str(val)
+        
+        if not groq_api_key:
+            groq_api_key = os.environ.get('GROQ_API_KEY')
+
+        # Determine provider and configure
+        try:
+             if groq_api_key:
+                 # Configure for Groq using OpenAI compatibility
+                 logger.info(f"Configuring DSPy for Groq with model {model}")
+                 lm = dspy.LM(
+                     model=model, 
+                     api_key=groq_api_key, 
+                     api_base="https://api.groq.com/openai/v1",
+                     temperature=0.0,
+                     max_tokens=2048
+                 )
+                 dspy.configure(lm=lm)
+             else:
+                 # Fallback to OpenAI or other default
+                 api_key = llm_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
+                 base_url = llm_config.get('base_url')
+                 lm = dspy.LM(
+                     model=model, 
+                     api_key=api_key, 
+                     api_base=base_url,
+                     temperature=0.0,
+                     max_tokens=2048
+                 )
+                 dspy.configure(lm=lm)
+                 
+        except Exception as e:
+             logger.warning(f"Failed to configure DSPy LM: {e}")
+             # Fallback or already configured
+             pass
+        
+        self.module = GraphExtractorModule()
+        logger.info(f"Initialized DSPy extractor with model {model}")
+
+    async def extract_relations(
+        self,
+        text: str,
+        custom_prompt: ChatPromptTemplate = None,
+        keywords: List[str] = None,
+        entities: List[str] = None,
+        abstract_concepts: List[str] = None
+    ) -> Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]:
+        """Extract relations using DSPy."""
+        
+        ontology_classes = abstract_concepts or []
+        entity_hints = entities or []
+        
+        try:
+            # DSPy calls are synchronous, so we run in a thread
+            def _extract_sync():
+                # The dspy module returns a Prediction object which has the output fields as attributes
+                prediction = self.module(text=text, ontology_classes=ontology_classes, entity_hints=entity_hints)
+                return prediction.triplets
+                
+            triplets = await asyncio.to_thread(_extract_sync)
+            
+            # Convert to expected format
+            relations = []
+            nodes_data = []
+            seen_nodes = set()
+            
+            # triplets is expected to be a list of Triplet objects (pydantic models)
+            if triplets:
+                for triplet in triplets:
+                    # Handle both dict and object access just in case
+                    if isinstance(triplet, dict):
+                        source = triplet.get('source')
+                        relation = triplet.get('relation')
+                        target = triplet.get('target')
+                        source_type = triplet.get('source_type')
+                        target_type = triplet.get('target_type')
+                    else:
+                        source = getattr(triplet, 'source', None)
+                        relation = getattr(triplet, 'relation', None)
+                        target = getattr(triplet, 'target', None)
+                        source_type = getattr(triplet, 'source_type', None)
+                        target_type = getattr(triplet, 'target_type', None)
+                    
+                    if source and relation and target:
+                        relations.append((source, relation, target))
+                        
+                        if source not in seen_nodes:
+                            nodes_data.append({"id": source, "type": source_type or "Entity", "properties": {}})
+                            seen_nodes.add(source)
+                        if target not in seen_nodes:
+                            nodes_data.append({"id": target, "type": target_type or "Entity", "properties": {}})
+                            seen_nodes.add(target)
+                        
+            return relations, nodes_data
+            
+        except Exception as e:
+            logger.error(f"DSPy extraction failed: {e}", exc_info=True)
+            return [], []
+
 def get_extractor(config: Dict[str, Any]) -> BaseExtractor:
     """
     Factory function to get the appropriate extractor based on config.
@@ -193,8 +324,11 @@ def get_extractor(config: Dict[str, Any]) -> BaseExtractor:
     if hasattr(extraction_config, 'model_dump'):
         extraction_config = extraction_config.model_dump()
         
-    extractor_type = extraction_config.get('backend', 'langchain') # fallback loop for now, we only have one
+    extractor_type = extraction_config.get('backend', 'dspy') # Default to dspy now
     
     logger.info(f"Initializing graph extractor: {extractor_type}")
+    
+    if extractor_type == 'dspy':
+        return DSPyExtractor(config)
     
     return LangChainExtractor(config)

@@ -16,7 +16,9 @@ tiktoken
 neo4j
 pykeen
 rdflib
-gliner[gpu]
+gliner
+powerlaw
 pandas
 seaborn
 matplotlib
+powerlaw
