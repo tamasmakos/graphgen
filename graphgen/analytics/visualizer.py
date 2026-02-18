@@ -16,6 +16,9 @@ def plot_evolution_metrics(csv_path: str, output_path: str) -> None:
     """
     Visualize the evolution of Modularity vs Topic Overlap.
     """
+    from graphgen.analytics.plot_style import apply_thesis_style
+    apply_thesis_style()
+
     if not os.path.exists(csv_path):
         logger.error("CSV file not found at %s", csv_path)
         return
@@ -38,7 +41,7 @@ def plot_evolution_metrics(csv_path: str, output_path: str) -> None:
             return
 
     # Create a dual-axis plot
-    fig, ax1 = plt.subplots(figsize=(10, 6))
+    fig, ax1 = plt.subplots(figsize=(9, 5.5))
 
     color = 'tab:blue'
     ax1.set_xlabel('Iteration')
@@ -74,6 +77,9 @@ def plot_topic_heatmap(
     """
     Generate and save a heatmap of topic similarity.
     """
+    from graphgen.analytics.plot_style import apply_thesis_style, truncate_label
+    apply_thesis_style()
+
     try:
         if not topic_embeddings:
             logger.info("Skipping heatmap: no topic embeddings available.")
@@ -81,13 +87,13 @@ def plot_topic_heatmap(
 
         sorted_ids = sorted(topic_embeddings.keys())
         matrix = np.vstack([topic_embeddings[tid] for tid in sorted_ids])
-        labels = [topic_labels.get(tid, tid) for tid in sorted_ids]
+        labels = [truncate_label(topic_labels.get(tid, tid), 20) for tid in sorted_ids]
         
         # Calculate similarity
         from sklearn.metrics.pairwise import cosine_similarity
         sim_matrix = cosine_similarity(matrix)
         
-        plt.figure(figsize=(12, 10))
+        plt.figure(figsize=(10, 8))
         sns.heatmap(sim_matrix, xticklabels=labels, yticklabels=labels, cmap="YlOrRd")
         plt.title(title)
         plt.tight_layout()
@@ -258,13 +264,15 @@ def plot_node2vec_impact(
     """
     Generate and save a plot comparing Baseline vs Node2Vec modularity.
     """
+    from graphgen.analytics.plot_style import apply_thesis_style
+    apply_thesis_style()
+
     try:
         if len(results_history) < 2:
             logger.info("Skipping Node2Vec plot: need at least 2 iterations.")
             return
         
-        plt.figure(figsize=(10, 6))
-        sns.set_style("whitegrid")
+        plt.figure(figsize=(9, 5.5))
         
         df = pd.DataFrame(results_history)
         iterations = df['iteration']
@@ -312,3 +320,113 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     plot_evolution_metrics(args.csv, args.output)
+
+def plot_community_centrality(
+    centrality_data: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    output_dir: str,
+    top_k: int = 5,
+) -> None:
+    """
+    Generate academic-quality bar charts for top entities by centrality per community.
+    One figure per community, with one subplot row per centrality measure.
+    """
+    from graphgen.analytics.plot_style import (
+        apply_thesis_style, truncate_label, CENTRALITY_PALETTE,
+    )
+    apply_thesis_style()
+
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+
+        for comm_id, measures in centrality_data.items():
+            if not measures:
+                continue
+
+            measure_names = list(measures.keys())
+            n = len(measure_names)
+
+            fig, axes = plt.subplots(n, 1, figsize=(7, 1.6 * n + 1.2), sharex=False)
+            if n == 1:
+                axes = [axes]
+
+            fig.suptitle(
+                f"Community {comm_id} — Top Entities by Centrality",
+                fontsize=12, fontweight="bold", y=1.0,
+            )
+
+            for idx, (ax, measure) in enumerate(zip(axes, measure_names)):
+                entities = measures[measure][:top_k]
+                names = [truncate_label(e["name"]) for e in reversed(entities)]
+                scores = [e["score"] for e in reversed(entities)]
+                color = CENTRALITY_PALETTE[idx % len(CENTRALITY_PALETTE)]
+
+                ax.barh(names, scores, color=color, edgecolor="white", linewidth=0.4)
+                ax.set_title(measure.replace("_", " ").title(), fontsize=10, pad=4)
+                ax.tick_params(axis="y", labelsize=8)
+                ax.tick_params(axis="x", labelsize=8)
+                ax.set_xlabel("Score", fontsize=9)
+
+            fig.tight_layout(rect=[0, 0, 1, 0.97])
+            fig.savefig(
+                os.path.join(output_dir, f"community_{comm_id}_centrality.png"),
+                dpi=300,
+            )
+            plt.close(fig)
+
+        logger.info("Saved community centrality plots to %s", output_dir)
+
+    except Exception:
+        logger.exception("Failed to plot community centrality.")
+
+
+def plot_global_centrality(
+    centrality_data: Dict[str, List[Dict[str, Any]]],
+    output_dir: str,
+    top_k: int = 10,
+) -> None:
+    """
+    Generate an academic-quality figure showing top entities by each centrality
+    measure across the entire graph.  One subplot row per measure.
+    """
+    from graphgen.analytics.plot_style import (
+        apply_thesis_style, truncate_label, CENTRALITY_PALETTE,
+    )
+    apply_thesis_style()
+
+    try:
+        if not centrality_data:
+            return
+
+        measure_names = list(centrality_data.keys())
+        n = len(measure_names)
+
+        fig, axes = plt.subplots(n, 1, figsize=(7, 2.0 * n + 1.2), sharex=False)
+        if n == 1:
+            axes = [axes]
+
+        fig.suptitle(
+            "Global Entity Centrality Rankings",
+            fontsize=13, fontweight="bold", y=1.0,
+        )
+
+        for idx, (ax, measure) in enumerate(zip(axes, measure_names)):
+            entities = centrality_data[measure][:top_k]
+            names = [truncate_label(e["name"]) for e in reversed(entities)]
+            scores = [e["score"] for e in reversed(entities)]
+            color = CENTRALITY_PALETTE[idx % len(CENTRALITY_PALETTE)]
+
+            ax.barh(names, scores, color=color, edgecolor="white", linewidth=0.4)
+            ax.set_title(measure.replace("_", " ").title(), fontsize=10, pad=4)
+            ax.tick_params(axis="y", labelsize=8)
+            ax.tick_params(axis="x", labelsize=8)
+            ax.set_xlabel("Score", fontsize=9)
+
+        os.makedirs(output_dir, exist_ok=True)
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        fig.savefig(os.path.join(output_dir, "global_centrality.png"), dpi=300)
+        plt.close(fig)
+
+        logger.info("Saved global centrality plot to %s", output_dir)
+
+    except Exception:
+        logger.exception("Failed to plot global centrality.")

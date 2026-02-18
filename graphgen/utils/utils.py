@@ -2,10 +2,29 @@
 
 import logging
 import os
+import re
 
 import networkx as nx
 
 logger = logging.getLogger(__name__)
+
+def standardize_label(text: str) -> str:
+    """
+    Standardize label/entity name to UPPER_CASE_WITH_UNDERSCORES.
+    
+    Rules:
+    - Replace any non-word characters (spaces, hyphens, dots, etc.) with underscores
+    - Remove leading/trailing underscores
+    - Uppercase everything
+    """
+    if not text:
+        return text
+    # Replace non-word characters (anything NOT a letter, number or underscore) with underscores
+    text = re.sub(r'[^\w]+', '_', text)
+    # Strip leading/trailing underscores
+    text = text.strip('_')
+    # Uppercase
+    return text.upper()
 
 def create_output_directory(path: str) -> None:
     """Create directory if it doesn't exist."""

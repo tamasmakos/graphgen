@@ -60,69 +60,16 @@ except ImportError:
     logger.warning("networkx or powerlaw not available. Degree distribution plots cannot be generated.")
 
 # ---------------------------------------------------------------------------
-# Style Configuration
+# Style Configuration (imported from shared module)
 # ---------------------------------------------------------------------------
 
-# Academic-friendly color palette (colorblind-safe)
-COLORS = {
-    'primary': '#2c3e50',       # Dark blue-gray
-    'secondary': '#e74c3c',     # Muted red
-    'accent': '#27ae60',        # Green
-    'baseline': '#95a5a6',      # Gray for baseline
-    # 'kge': '#2980b9',           # Blue for KGE-enhanced (removed)
-    'modularity': '#2c3e50',    # Dark for modularity
-    'separation': '#c0392b',    # Red for separation
-    'overlap': '#e67e22',       # Orange for overlap
-    'silhouette_pos': '#27ae60', # Green for positive silhouette
-    'silhouette_neg': '#e74c3c', # Red for negative silhouette
-    'entity': '#3498db',        # Blue
-    'community': '#2ecc71',     # Green
-    'subcommunity': '#9b59b6',  # Purple
-    'grid': '#ecf0f1',          # Light grid
-}
-
-# Community-level palette for per-group charts
-COMM_PALETTE = [
-    '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-    '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
-    '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
-    '#c49c94', '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5',
-]
+from graphgen.analytics.plot_style import (
+    COLORS,
+    COMM_PALETTE,
+    apply_thesis_style as _apply_thesis_style,
+)
 
 
-def _apply_thesis_style():
-    """Configure matplotlib for thesis-quality output."""
-    if not MATPLOTLIB_AVAILABLE:
-        return
-
-    plt.rcParams.update({
-        'font.family': 'serif',
-        'font.size': 11,
-        'axes.titlesize': 13,
-        'axes.labelsize': 12,
-        'xtick.labelsize': 10,
-        'ytick.labelsize': 10,
-        'legend.fontsize': 10,
-        'figure.dpi': 300,
-        'savefig.dpi': 300,
-        'savefig.bbox': 'tight',
-        'savefig.pad_inches': 0.15,
-        'axes.spines.top': False,
-        'axes.spines.right': False,
-        'axes.grid': True,
-        'grid.alpha': 0.3,
-        'grid.linewidth': 0.5,
-        'lines.linewidth': 2.0,
-        'lines.markersize': 8,
-        'figure.figsize': (8, 5),
-    })
-
-    if SEABORN_AVAILABLE:
-        sns.set_context("paper", font_scale=1.1)
-        sns.set_style("whitegrid", {
-            'axes.edgecolor': '.3',
-            'grid.color': COLORS['grid'],
-        })
 
 
 # ---------------------------------------------------------------------------

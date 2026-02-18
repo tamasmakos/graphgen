@@ -22,6 +22,8 @@ from graphgen.pipeline.entity_relation.dspy_module import GraphExtractorModule
 import dspy
 import os
 
+from graphgen.utils.utils import standardize_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,7 +46,7 @@ class BaseExtractor(ABC):
         keywords: List[str] = None,
         entities: List[str] = None,
         abstract_concepts: List[str] = None
-    ) -> Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]]]:
         """
         Extract relations from text.
         
@@ -55,10 +57,15 @@ class BaseExtractor(ABC):
             entities: Optional list of entities to focus on (used by LangChain)
             abstract_concepts: Optional list of abstract concepts (used by LangChain)
             
-        Returns:
+            text: Text to extract relations from
+            custom_prompt: Optional custom prompt template
+            keywords: Optional list of keywords to guide extraction
+            entities: Optional list of entities to focus on (used by LangChain)
+            abstract_concepts: Optional list of abstract concepts (used by LangChain)
+            
         Returns:
             Tuple containing:
-            - List of (source, relation_type, target) triplets
+            - List of (source, relation_type, target, properties) tuples
             - List of extracted nodes with metadata (id, type, properties)
         """
         pass
@@ -87,7 +94,7 @@ class LangChainExtractor(BaseExtractor):
         keywords: List[str] = None,
         entities: List[str] = None,
         abstract_concepts: List[str] = None
-    ) -> Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]]]:
         """Extract relations using LangChain LLMGraphTransformer."""
         # abstract_concepts now contains the ontology labels (Types)
         allowed_nodes = abstract_concepts or []
@@ -143,16 +150,17 @@ class LangChainExtractor(BaseExtractor):
                 for graph_doc in graph_docs:
                     # Extract relations
                     for relationship in graph_doc.relationships:
-                        source = relationship.source.id
-                        target = relationship.target.id
-                        relation_type = relationship.type
-                        relations.append((source, relation_type, target))
+                        source = standardize_label(relationship.source.id)
+                        target = standardize_label(relationship.target.id)
+                        relation_type = standardize_label(relationship.type)
+                        props = dict(relationship.properties or {})
+                        relations.append((source, relation_type, target, props))
                         
                     # Extract nodes
                     for node in graph_doc.nodes:
                         nodes_data.append({
-                            "id": node.id,
-                            "type": node.type,
+                            "id": standardize_label(node.id),
+                            "type": standardize_label(node.type),
                             "properties": dict(node.properties or {})
                         })
                 
@@ -256,7 +264,7 @@ class DSPyExtractor(BaseExtractor):
         keywords: List[str] = None,
         entities: List[str] = None,
         abstract_concepts: List[str] = None
-    ) -> Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]:
+    ) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]]]:
         """Extract relations using DSPy."""
         
         ontology_classes = abstract_concepts or []
@@ -293,14 +301,30 @@ class DSPyExtractor(BaseExtractor):
                         source_type = getattr(triplet, 'source_type', None)
                         target_type = getattr(triplet, 'target_type', None)
                     
+                        source_type = getattr(triplet, 'source_type', None)
+                        target_type = getattr(triplet, 'target_type', None)
+                        confidence = getattr(triplet, 'confidence', 1.0)
+                        evidence = getattr(triplet, 'evidence', "")
+                    
                     if source and relation and target:
-                        relations.append((source, relation, target))
+                        # Standardize upstream
+                        source = standardize_label(source)
+                        target = standardize_label(target)
+                        relation = standardize_label(relation)
+                        source_type = standardize_label(source_type) if source_type else "ENTITY"
+                        target_type = standardize_label(target_type) if target_type else "ENTITY"
+                        
+                        props = {
+                            "confidence": confidence,
+                            "evidence": evidence
+                        }
+                        relations.append((source, relation, target, props))
                         
                         if source not in seen_nodes:
-                            nodes_data.append({"id": source, "type": source_type or "Entity", "properties": {}})
+                            nodes_data.append({"id": source, "type": source_type, "properties": {}})
                             seen_nodes.add(source)
                         if target not in seen_nodes:
-                            nodes_data.append({"id": target, "type": target_type or "Entity", "properties": {}})
+                            nodes_data.append({"id": target, "type": target_type, "properties": {}})
                             seen_nodes.add(target)
                         
             return relations, nodes_data

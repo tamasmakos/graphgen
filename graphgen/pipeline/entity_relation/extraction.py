@@ -10,6 +10,7 @@ import torch
 # --- Graphgen Imports ---
 from graphgen.data_types import PipelineContext, ChunkExtractionTask
 from graphgen.pipeline.entity_relation.extractors import BaseExtractor, get_extractor
+from graphgen.utils.utils import standardize_label
 # We assume resolution is in graph_cleaning as previously found
 from graphgen.pipeline.graph_cleaning.resolution import resolve_extraction_coreferences
 
@@ -127,7 +128,7 @@ async def extract_relations_with_llm_async(
     keywords: List[str] = None,
     entities: List[str] = None,
     abstract_concepts: List[str] = None
-) -> Tuple[List[Tuple[str, str, str]], List[Dict[str, Any]]]:
+) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]]]:
     """Extract relations using configured extractor."""
     if not extractor or not text:
         return [], []
@@ -164,8 +165,8 @@ async def _extract_entities_for_chunk(
                 # Run spacy in thread to avoid blocking loop
                 doc = await asyncio.to_thread(nlp, text)
                 return [{
-                    "text": ent.text,
-                    "label": ent.label_
+                    "text": standardize_label(ent.text),
+                    "label": standardize_label(ent.label_)
                 } for ent in doc.ents]
         except Exception as e:
             logger.error(f"Spacy extraction failed for chunk: {e}")
@@ -198,9 +199,10 @@ async def _extract_entities_for_chunk(
                 )
                 
                 predictions = await asyncio.to_thread(predict_func)
-                # inference returns List[List[Dict]] -- flatten to single list
-                flat_predictions = [item for sublist in predictions for item in sublist]
-                return flat_predictions
+                return [{
+                    "text": standardize_label(item.get('text', '')),
+                    "label": standardize_label(item.get('label', ''))
+                } for item in flat_predictions]
                 
         except Exception as e:
             logger.error(f"GLiNER extraction failed for chunk: {e}")
@@ -282,7 +284,12 @@ async def process_extraction_task(
             ent_count = len(set([x for tr in raw_relations for x in (tr[0], tr[2])])) if raw_relations else 0
             logger.debug(f"      Completed {task.chunk_id}: stored {ent_count} entities, {rel_count} relations")
             
-            return {"success": True, "chunk_id": task.chunk_id}
+            return {
+                "success": True, 
+                "chunk_id": task.chunk_id,
+                "entity_count": ent_count,
+                "relation_count": rel_count
+            }
             
         except Exception as e:
             logger.error(f"      Failed {task.chunk_id}: {str(e)}", exc_info=True)
@@ -352,9 +359,14 @@ async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str
         # Enrich graph per segment
         enrich_result = await enrich_graph_per_segment(deps)
         
+        total_entities = sum(r.get("entity_count", 0) for r in results if r.get("success"))
+        total_relations = sum(r.get("relation_count", 0) for r in results if r.get("success"))
+
         return {
             "processed": len(results),
             "successful": successful,
+            "total_entities_extracted": total_entities,
+            "total_relations_extracted": total_relations,
             "errors": errors + enrich_result.get("errors", [])
         }
     finally:
@@ -400,7 +412,7 @@ def _get_chunks_for_segment(graph: nx.DiGraph, segment_id: str) -> List[str]:
 
 async def add_triplets_to_graph_for_segment(
     deps: PipelineContext,
-    relations: List[Tuple[str, str, str]],
+    relations: List[Tuple[str, str, str, Dict[str, Any]]],
     entity_mappings: Dict[str, str],
     segment_id: str,
     chunk_entity_map: Dict[str, Set[str]],
@@ -460,11 +472,22 @@ async def add_triplets_to_graph_for_segment(
  
     
     # Add relations
-    for h, r, t in relations:
+    for h, r, t, props in relations:
         if not graph.has_node(h) or not graph.has_node(t):
             continue
             
-        graph.add_edge(h, t, label=r, relation_type=r, graph_type="entity_relation", segment_id=segment_id, source="extraction")
+        # Props usually contains confidence, evidence
+        edge_attrs = {
+            "label": r, 
+            "relation_type": r, 
+            "graph_type": "entity_relation", 
+            "segment_id": segment_id, 
+            "source": "extraction"
+        }
+        if props:
+            edge_attrs.update(props)
+            
+        graph.add_edge(h, t, **edge_attrs)
 
     # Link chunks to entities
     for chunk_id, entities in chunk_entity_map.items():
@@ -510,15 +533,14 @@ async def enrich_graph_per_segment(deps: PipelineContext) -> Dict[str, Any]:
                 
                 # Populate GLiNER map
                 for entity in gliner_entities:
-                    text = entity.get('text', '').strip()
-                    label = entity.get('label', '')
+                    text = standardize_label(entity.get('text', ''))
+                    label = standardize_label(entity.get('label', ''))
                     if text and label:
                         gliner_label_map[text] = label
-                        gliner_label_map[text.lower()] = label # Add lower case for robustness
                 
                 entities_in_chunk = set()
-                for (h, r, t) in raw_relations:
-                    aggregated_relations.append((h, r, t))
+                for (h, r, t, _) in raw_relations:
+                    aggregated_relations.append((h, r, t, _))
                     entities_in_chunk.add(h)
                     entities_in_chunk.add(t)
                 
@@ -531,7 +553,7 @@ async def enrich_graph_per_segment(deps: PipelineContext) -> Dict[str, Any]:
                 
                 if not entities_in_chunk:
                     initial_ents = node.get('initial_entities') or []
-                    entities_in_chunk.update(initial_ents)
+                    entities_in_chunk.update([standardize_label(e) for e in initial_ents])
                 
                 if entities_in_chunk:
                     chunk_entity_map[cid] = entities_in_chunk

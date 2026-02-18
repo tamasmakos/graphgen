@@ -22,7 +22,12 @@ from graphgen.pipeline.graph_cleaning.resolution import resolve_entities_semanti
 from graphgen.pipeline.summarization.core import generate_community_summaries
 from graphgen.analytics.reporting import generate_topic_separation_report
 from graphgen.analytics.metrics import calculate_node2vec_significance
-from graphgen.analytics.visualizer import plot_node2vec_impact
+from graphgen.analytics.visualizer import plot_node2vec_impact, plot_community_centrality, plot_global_centrality
+from graphgen.analytics.centrality import (
+    calculate_centrality_measures, 
+    get_top_entities_global, 
+    get_top_entities_per_community
+)
 from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
 from graphgen.config.llm import get_langchain_llm
 from graphgen.config.schema import GraphSchema
@@ -138,10 +143,35 @@ class IterativeOrchestrator:
             # But we should probably clear `ctx.extraction_tasks` to keep memory low and logic clean
             ctx.extraction_tasks = []
 
+            # --- WEIGHTED (Node2Vec) ---
+            if self.settings.community.node2vec_enabled:
+                from graphgen.pipeline.embeddings.node2vec_wrapper import compute_node2vec_weights, compute_node_embeddings
+                
+                # 4a. Compute Structural Embeddings for Resolution
+                # We do this BEFORE resolution to help identify structurally similar duplicates
+                logger.debug("Computing Node2Vec embeddings for resolution...")
+                structural_embeddings = compute_node_embeddings(
+                    ctx.graph,
+                    dimensions=self.settings.community.node2vec_dimensions,
+                    workers=4 # Use defaults or settings
+                )
+            else:
+                structural_embeddings = None
+
             # 4. Enrichment
             # Generate RAG embeddings for Entities (needed for resolution)
             generate_rag_embeddings(ctx.graph, node_types=['ENTITY_CONCEPT'])
-            resolve_entities_semantically(ctx.graph, similarity_threshold=self.settings.processing.similarity_threshold)
+            resolution_stats = resolve_entities_semantically(
+                ctx.graph, 
+                similarity_threshold=self.settings.processing.similarity_threshold,
+                structural_embeddings=structural_embeddings
+            )
+            
+            # Save resolution report for this iteration
+            er_report_path = os.path.join(thesis_output_dir, f"iteration_{i+1}_entity_resolution.json")
+            with open(er_report_path, 'w', encoding='utf-8') as f:
+                json.dump(resolution_stats, f, indent=2, ensure_ascii=False)
+            logger.info(f"Saved entity resolution report to {er_report_path}")
             
             # 6. Community Detection
             # --- BASELINE (Unweighted) ---
@@ -242,6 +272,42 @@ class IterativeOrchestrator:
                 # This runs other analytics (heatmap, KGE comparison if enabled)
                 # We don't overwrite our stats with this
                 _ = analyzer.run_full_analysis(ctx.graph, communities_map)
+
+                # --- CENTRALITY ANALYTICS ---
+                try:
+                    logger.info("Running advanced centrality analysis...")
+                    
+                    # 1. Calculate Centrality
+                    centrality_scores = calculate_centrality_measures(ctx.graph)
+                    
+                    if centrality_scores:
+                        # 2. Global Top Entities
+                        global_top = get_top_entities_global(centrality_scores, ctx.graph, top_k=20)
+                        
+                        # Save Global JSON (per iteration)
+                        with open(f"{self.settings.infra.output_dir}/iteration_{i+1}_global_centrality.json", 'w') as f:
+                            json.dump(global_top, f, indent=2)
+
+                        # 3. Community Top Entities
+                        comm_top = get_top_entities_per_community(centrality_scores, communities_map, ctx.graph, top_k=10)
+                        
+                        # Save Community JSON (per iteration)
+                        with open(f"{self.settings.infra.output_dir}/iteration_{i+1}_community_centrality.json", 'w') as f:
+                            json.dump(comm_top, f, indent=2)
+
+                        # Generate plots only on the FINAL iteration
+                        is_final = (i == self.settings.iterative.iterations - 1)
+                        if is_final:
+                            plots_dir = f"{self.settings.infra.output_dir}/centrality_plots"
+                            plot_global_centrality(global_top, plots_dir)
+                            plot_community_centrality(comm_top, plots_dir)
+                            logger.info("Final centrality plots saved to %s", plots_dir)
+                        
+                        logger.info("Centrality analysis completed and saved.")
+                        
+                except Exception as e:
+                    logger.error(f"Centrality analysis failed: {e}", exc_info=True)
+                # --------------------------------
 
             if self.settings.analytics.save_checkpoints:
                 checkpoints_dir = os.path.join(thesis_output_dir, "checkpoints")

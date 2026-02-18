@@ -204,7 +204,10 @@ class KnowledgePipeline:
             generate_rag_embeddings(ctx.graph)
             
             logger.info("  3.2: Semantic Resolution...")
-            resolve_entities_semantically(ctx.graph)
+            logger.info("  3.2: Semantic Resolution...")
+            resolution_stats = resolve_entities_semantically(ctx.graph)
+            ctx.stats['entity_resolution'] = resolution_stats
+            logger.info(f"Resolution Stats: {resolution_stats}")
             
         except Exception as e:
             logger.error(f"Semantic enrichment failed: {e}")
@@ -277,7 +280,9 @@ class KnowledgePipeline:
 
     async def _step_pruning(self, ctx: PipelineContext) -> None:
         logger.info("Step 5: Pruning Graph...")
-        prune_stats = prune_graph(ctx.graph, {'pruning_threshold': 0.01})
+        # Use config if available
+        config = self.settings.model_dump() if hasattr(self.settings, 'model_dump') else self.settings.dict()
+        prune_stats = prune_graph(ctx.graph, config)
         ctx.stats['pruning'] = prune_stats
         logger.info(f"Pruning Stats: {prune_stats}")
 
@@ -338,7 +343,19 @@ class KnowledgePipeline:
                         d[k] = v.isoformat()
             
             nx.write_graphml(clean_graph, graph_path)
+            nx.write_graphml(clean_graph, graph_path)
             logger.info(f"GraphML saved to {graph_path}")
+            
+            # Save Entity Resolution Report
+            er_report_path = os.path.join(output_dir, "entity_resolution_report.json")
+            er_stats = {
+                "extraction": ctx.stats.get('extraction', {}),
+                "entity_resolution": ctx.stats.get('entity_resolution', {}),
+                "pruning": ctx.stats.get('pruning', {})
+            }
+            with open(er_report_path, 'w') as f:
+                json.dump(er_stats, f, indent=2)
+            logger.info(f"Entity Resolution Report saved to {er_report_path}")
         except Exception as e:
             logger.error(f"Failed to save artifacts: {e}")
             ctx.add_error("artifacts", str(e))

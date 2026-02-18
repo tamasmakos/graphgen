@@ -74,6 +74,6 @@ analytics:
 # Iterative Experiment Configuration - Smoke Test
 iterative:
   enabled: true
-  batch_size: 2
-  iterations: 20
+  batch_size: 3
+  iterations: 4
   random_seed: 42

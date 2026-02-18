@@ -8,6 +8,8 @@ supporting manual labels, ontology-based extraction, or both.
 import logging
 from typing import List, Dict, Any
 
+from graphgen.utils.utils import standardize_label
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_LABELS = [
@@ -78,7 +80,12 @@ def resolve_entity_labels(extraction_config: Dict[str, Any]) -> List[str]:
     # Final safety check: if still empty, use defaults
     if not result:
         logger.warning(f"No entity labels resolved from manual or ontology sources. Using {len(DEFAULT_LABELS)} default labels.")
-        return DEFAULT_LABELS
+        result = DEFAULT_LABELS
+    
+    # Standardize all labels
+    result = [standardize_label(label) for label in result]
+    # Remove duplicates after standardization (e.g. "Person" and "person" both become "PERSON")
+    result = sorted(list(set(result)))
         
     return result
 

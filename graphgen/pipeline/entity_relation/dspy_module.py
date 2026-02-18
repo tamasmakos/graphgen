@@ -8,12 +8,16 @@ class Triplet(BaseModel):
     relation: str = Field(description="The relationship between source and target")
     target: str = Field(description="The target entity")
     target_type: str = Field(description="The ontology class of the target entity")
+    confidence: float = Field(description="Confidence score (0.0-1.0) of this extraction")
+    evidence: str = Field(description="Verbatim text snippet that supports this relation")
 
 class EntityRelation(dspy.Signature):
     """
     Extract knowledge graph triplets (source, relation, target) from text.
     Use the provided ontology classes to filter allowed entity types if applicable, but primarily focus on the text.
-    Use the provided entity hints as a guide for what entities might be present, but do not limit yourself to only these if others are clearly present and relevant.
+    Use the provided entity hints as a guide for what entities might be present.
+    ONLY extract relations that are explicitly stated in the text and have high confidence.
+    Avoid "fluff" or trivial relations. Focus on significant interactions, facts, and properties.
     """
     text: str = dspy.InputField(desc="The input text to extract relations from.")
     ontology_classes: List[str] = dspy.InputField(desc="List of allowed ontology classes/types for entities.")
