@@ -4,13 +4,13 @@
 
 ## **Abstract**
 
-Traditional topic modeling techniques, such as Latent Dirichlet Allocation (LDA), have long served as the standard for thematic analysis of large text corpora. However, their reliance on "bag-of-words" assumptions, which disregard syntax and relational context, limits their ability to capture the nuanced structure of complex discourse. This thesis introduces and evaluates a novel, graph-based paradigm for topic modeling that leverages the capabilities of Large Language Models (LLMs) to construct and analyze a knowledge graph from textual data. The central research questions investigate whether thematic communities identified within this graph can be considered valid "topics" from a linguistic and philosophical standpoint, and whether this structural approach offers a more advanced and interpretable alternative to probabilistic models.
+Traditional topic modeling techniques, such as Latent Dirichlet Allocation (LDA), have long served as the standard for thematic analysis of large text corpora. However, their reliance on "bag-of-words" assumptions, which disregard syntax and relational context, limits their ability to capture the nuanced structure of complex discourse. This thesis explores a graph-based paradigm for topic modeling that leverages Large Language Models (LLMs) to construct and analyze a knowledge graph from textual data. The central research questions investigate whether thematic communities identified within this graph can be considered valid "topics" from a linguistic and philosophical standpoint, and whether this structural approach offers a complementary alternative to probabilistic models in terms of interpretability.
 
 The methodology is applied to the verbatim reports of the 'This is Europe' European Parliamentary debate series (2022-2024). The process involves a rigorous pipeline starting with **ontology injection**, where domain-specific class definitions guide the extraction process. An LLM-powered system then extracts entities, relationships, and claims to construct a Knowledge Graph. To refine the structural quality of this graph, **Node2Vec embeddings** are generated to capture topological similarities, which are then used to re-weight edges. Finally, the Leiden community detection algorithm partitions this weighted graph into densely connected, thematically coherent communities.
 
-A key finding of this research is the validation of the extraction methodology through the emergence of **scale-free properties** in the generated graph, a hallmark of organic complex networks. Furthermore, the application of Node2Vec-based edge weighting was shown to significantly enhance the definition of these communities, improving the Leiden modularity score from a baseline of ~0.74 to ~0.82 in later iterations. This structural enhancement allows the model to reconcile a high average semantic similarity (0.57) among topic summaries with the clear identification of distinct, separable thematic clusters. The result is a model that effectively distinguishes the overarching discourse topic from specific, nuanced sub-topics.
+A key finding of this research is the validation of the extraction methodology through the emergence of **scale-free properties** in the generated graph, a hallmark of organic complex networks. Furthermore, the application of Node2Vec-based edge weighting was shown to significantly enhance the definition of these communities, improving the Leiden modularity score from a baseline of ~0.74 to ~0.82 in later iterations. This structural enhancement allows the model to reconcile a high average semantic similarity (0.57) among topic summaries with the clear identification of distinct, separable thematic clusters.
 
-The thesis concludes that defining topics as structurally coherent communities within a knowledge graph represents a significant conceptual and practical advancement. This approach moves beyond statistical inference of latent themes to the explicit representation of knowledge structures, offering superior interpretability, context-awareness, and a more profound alignment with the philosophical and linguistic nature of what constitutes a "topic" in human communication.
+The thesis concludes that defining topics as structurally coherent communities within a knowledge graph represents a viable complementary approach to probabilistic methods. This exploration offers an alternative perspective on topic modeling—one that prioritizes interpretability and explicit structure—while acknowledging that graph-based methods are not necessarily superior to simpler approaches (Galke & Scherp, 2022).
 
 ---
 
@@ -30,15 +30,17 @@ These concepts can be synthesized through the lens of Foucauldian discourse theo
 
 ### **1.2 Computational Approaches to Topic Modeling**
 
-The abstract, theoretical concept of a topic must be operationalized to be computationally tractable. While the dominant approach for the last two decades has been the probabilistic paradigm, exemplified by Latent Dirichlet Allocation (LDA) (Blei, Ng, & Jordan, 2003), this thesis proposes a fundamental shift towards a *structural* paradigm.
+The abstract, theoretical concept of a topic must be operationalized to be computationally tractable. While the dominant approach for the last two decades has been the probabilistic paradigm, exemplified by Latent Dirichlet Allocation (LDA) (Blei, Ng, & Jordan, 2003), alternative structural approaches have gained interest in recent years.
 
-Probabilistic models like LDA define a topic as a probability distribution over a vocabulary, inferred from the co-occurrence of words within documents. This relies on the "bag-of-words" assumption, which treats text as an unordered collection of terms, disregarding the rich relational structure of language.
+Probabilistic models like LDA define a topic as a probability distribution over a vocabulary, inferred from the co-occurrence of words within documents. This relies on the "bag-of-words" assumption, which treats text as an unordered collection of terms, disregarding the rich relational structure of language. Despite its limitations, LDA remains a strong baseline—recent work by Galke and Scherp (2022) demonstrated that simple bag-of-words approaches can often outperform more complex graph-based methods in text classification tasks, raising important questions about the practical necessity of graph constructions.
 
-In contrast, the **structural paradigm** proposed here defines a topic not as a statistical abstraction but as an explicit, tangible component of a knowledge graph. The formal definition is as follows:
+In recent years, graph-based approaches have emerged as an alternative paradigm. TextGCN (Yao, Mao, & Luo, 2019) constructed heterogeneous graphs linking words and documents, demonstrating that graph convolutional networks could capture document-level topics. The Graph Neural Topic Model (GNTM) (Xie et al., 2021) integrated graph-based regularization into neural topic models. These approaches define topics not as statistical abstractions but as components of an explicit knowledge structure.
+
+This thesis explores a **structural paradigm** that defines a topic as a community within a knowledge graph. The formal definition is as follows:
 
 *A topic is a densely interconnected community of entities (nodes) and their relationships (edges) within a knowledge graph, which is algorithmically identified through community detection and can be articulated through a natural language summary.*
 
-This definition moves the unit of analysis from words to entities—real-world concepts, people, places, and organizations—and their explicit, labeled relationships. It directly operationalizes the theoretical concept of a "system of thoughts," where meaning is derived from the structure of connections. This shift aims to move away from the statistical inference of latent variables and towards the explicit representation of the underlying knowledge structures that constitute the discourse.
+This approach moves the unit of analysis from words to entities—real-world concepts, people, places, and organizations—and their explicit, labeled relationships. It represents one possible operationalization of the theoretical concept of a "system of thoughts," where meaning is derived from the structure of connections. It is important to note that this is not claimed as a replacement for probabilistic methods but rather as an alternative exploration—one that prioritizes interpretability and explicit structure over computational efficiency.
 
 ---
 
@@ -346,11 +348,11 @@ Several promising directions emerge from this research.
 
 ### **5.5 Final Reflections**
 
-This research concludes that defining topics as structurally coherent communities within a knowledge graph represents a viable alternative to the dominant probabilistic paradigm. While the approach is computationally more demanding, the gains in explainability, auditability, and alignment with the graph-theoretic nature of knowledge representation suggest it is well-suited for domains where interpretability is paramount.
+This research concludes that defining topics as structurally coherent communities within a knowledge graph represents a viable alternative to the dominant probabilistic paradigm. While the approach is computationally more demanding, the gains in explainability, auditability, and alignment with the graph-theoretic nature of knowledge representation suggest it may be well-suited for domains where interpretability is paramount—though, as Galke and Scherp (2022) demonstrated, simpler methods often perform equally well or better in practice.
 
-The tension between structural coherence and semantic distinctiveness observed in the "This is Europe" corpus is not a limitation of the method but a substantive finding about the nature of contemporary European political discourse: a period characterized by interconnected crises and consilient framing. The graph-based approach's ability to faithfully represent this property—rather than artificially imposing separability where none exists—demonstrates its value as a diagnostic tool as much as a topic modeling technique.
+The tension between structural coherence and semantic distinctiveness observed in the "This is Europe" corpus is not necessarily a limitation of the method but a substantive finding about the nature of contemporary European political discourse: a period characterized by interconnected crises and consilient framing. The graph-based approach's ability to faithfully represent this property—rather than artificially imposing separability where none exists—demonstrates its potential value as a diagnostic tool for understanding discourse structure.
 
-Future work in knowledge graph-based discourse analysis, graph neural topic models, and graph-enhanced retrieval systems will likely build on the insights developed here. The convergence of these fields suggests that graph-based methods will play an increasingly important role in computational social science, policy analysis, and the broader study of political communication.
+Future work in knowledge graph-based discourse analysis, graph neural topic models, and graph-enhanced retrieval systems may build on the insights developed here. However, given the empirical evidence that simpler approaches often suffice (Galke & Scherp, 2022), this thesis should be understood as an exploration of an alternative paradigm rather than a claim of superiority.
 
 ---
 
@@ -370,11 +372,17 @@ Firbas, J. (1992) *Functional sentence perspective in written and spoken communi
 
 Foucault, M. (1972) *The archaeology of knowledge*. New York: Pantheon Books.
 
+Galke, L. & Scherp, A. (2022) 'Bag-of-Words vs. Graph vs. Sequence in Text Classification: Questioning the Necessity of Text-Graphs and the Surprising Strength of a Wide MLP', *Proceedings of the 44th International ACM SIGIR Conference on Research and Development in Information Retrieval*, pp. 2365-2376.
+
 Griffiths, T. L. & Steyvers, M. (2004) 'Finding scientific topics', *Proceedings of the National Academy of Sciences*, 101(suppl 1), pp. 5228-5235.
 
 Halliday, M. A. K. (1985) *An introduction to functional grammar*. London: Edward Arnold.
 
 Jolliffe, I. T. (2002) *Principal component analysis*. 2nd edn. New York: Springer.
+
+Zhao, H., Phung, D., Huynh, V., Jin, Y., Du, L. & Buntine, W. (2021) 'Topic Modelling Meets Deep Neural Networks: A Survey', *arXiv preprint arXiv:2103.00498*.
+
+Wu, X., Nguyen, T. & Luu, A. T. (2024) 'A Survey on Neural Topic Models: Methods, Applications, and Challenges', *arXiv preprint arXiv:2401.15351*.
 
 Newman, M. E. J. (2005) 'Power laws, Pareto distributions and Zipf's law', *Contemporary Physics*, 46(5), pp. 323-351.
 
