@@ -93,6 +93,43 @@ This embedding process captures the topological neighborhood of each entity. Ent
 
 This process is vital for the validity of the overall analysis. Without effective ER, a central concept like 'Ukraine' might be fragmented into dozens of low-degree nodes, obscuring its true role as a major hub in the network. By consolidating these fragments into a single, high-degree node, ER ensures that the scale-free analysis is accurate and that the subsequent community detection operates on a topologically coherent and semantically meaningful graph.
 
+### **2.5 Exhaustive Filtering Mechanisms for Topic Modeling**
+
+The knowledge graph construction pipeline incorporates a multi-stage filtering system designed to extract meaningful abstract concepts while eliminating noise, function words, and spurious associations. This exhaust filter approach serves as a critical preprocessing step for topic modeling, ensuring that the resulting communities represent substantive thematic structures rather than artifacts of the extraction process.
+
+**Filtering Architecture**: The filtering pipeline operates across three dimensions: speech-level filtering, grammatical filtering, and semantic filtering. Each dimension serves a distinct purpose in refining the entity and relationship set before community detection.
+
+**Speech-Level Entity Filtering**: At the corpus aggregation stage, entities that appear fewer than twice across the entire corpus are removed unless they participate in at least one relationship. This heuristic balances two competing concerns: (i) entities mentioned only once may represent noise or idiosyncratic references that do not generalize across the debate series, and (ii) entities that participate in relationships—even if mentioned only once—may serve important structural roles as bridges between thematic clusters. The threshold of two mentions was determined empirically and represents a conservative compromise that retains potentially significant entities while filtering clear outliers.
+
+**Grammatical Filtering**: The pipeline employs a series of grammatical rules to identify valid abstract concepts from candidate words. These rules, implemented in the `is_grammatically_valid_concept` function, include:
+
+1. **Length Filter**: Words shorter than three characters are rejected as insufficiently meaningful.
+2. **Alphabetic Filter**: Only purely alphabetic tokens are retained, excluding numeric values and special characters.
+3. **Part-of-Speech Filter**: Only common nouns (NN, NNS) are accepted; proper nouns are excluded as they represent specific entities rather than abstract concepts.
+4. **Morphological Filter**: Words ending in suffixes such as *-ing*, *-ed*, *-er*, *-est*, or *-ly* are rejected, as these typically indicate verb-derived forms, comparatives, or adverbs rather than abstract nouns.
+5. **Lexical Validity Filter**: WordNet synset analysis ensures that the candidate word has at least one valid noun sense.
+6. **Semantic Depth Filter**: Abstract concepts are identified by their position in the semantic hierarchy. Words whose WordNet hypernym paths connect to abstract root synsets (e.g., *abstract_entity.n.01*, *attribute.n.01*) with path depth greater than four are retained as abstract concepts.
+
+**Additional Linguistic Filters**: The pipeline further excludes:
+
+- **Pronouns and Determiners**: Words with POS tags in the set {PRP, PRP$, WP, WP$, DT, WDT, PDT, CD, MD} are filtered as function words that lack semantic content.
+- **Temporal and Spatial Deictics**: Words whose semantic paths connect to *time.n.01*, *space.n.01*, *location.n.01*, or *temporal_relation.n.01* are excluded, as these represent contextual anchors rather than substantive topics.
+- **Modal and Auxiliary Concepts**: Words primarily classified as verbs in WordNet are excluded, as they represent actions rather than abstract concepts.
+
+These exhaust filters serve a dual purpose in the topic modeling pipeline. First, they reduce the dimensionality of the graph by eliminating nodes that would otherwise fragment community structure through spurious connections. Second, they ensure that the resulting communities are composed of entities with genuine semantic content, making the downstream summarization more coherent and interpretable.
+
+### **2.6 Topic Modeling as a Use-Case: Structural versus Distributional Approaches**
+
+The application of community detection to the filtered knowledge graph represents a structural alternative to traditional distributional topic modeling. Whereas LDA and its variants define topics as probability distributions over words—inferring latent structures from co-occurrence patterns—the structural paradigm defined in this thesis treats topics as explicit subgraphs identified through community detection. This distinction has important implications for interpretability, validation, and the philosophical foundations of what constitutes a "topic."
+
+**Structural Topics as Relational Clusters**: In the structural paradigm, a topic is defined as a densely interconnected subgraph whose nodes share more edges with each other than with the rest of the graph. This definition operationalizes the philosophical notion of a topic as a coherent system of "aboutness" relations. The Leiden algorithm's guarantee of connected communities ensures that each identified topic forms a single, cohesive unit—no disconnected clusters that would violate the intuition of a unified theme.
+
+**Validation Through Structural Properties**: The structural approach enables validation through network properties that are unavailable to distributional methods. The emergence of scale-free topology in the extracted graph serves as a strong form of structural validation: if the extraction pipeline has successfully captured the underlying discourse structure, the resulting network should exhibit the same statistical properties as real-world complex networks. The observed power-law degree distribution confirms that the ontology-guided extraction has produced a graph with organic structure rather than artificial clustering.
+
+**Complementarity with Distributional Methods**: The structural approach does not necessarily supplant distributional methods but rather complements them. Where LDA infers topics from word co-occurrence patterns without explicit relational structure, the graph-based approach leverages the full richness of entity-relationship triples. The two paradigms may be fruitfully combined: distributional similarity measures could inform edge weights, while structural community detection could provide topic boundaries that constrain distributional inference.
+
+The exhaust filtering mechanisms described above play a critical role in this use-case. By ensuring that only semantically substantive entities participate in the graph, the filters reduce the risk that community detection will identify spurious structures formed by noise entities. The resulting topics are more likely to correspond to genuine thematic divisions in the discourse rather than artifacts of the extraction process.
+
 ---
 
 ## **Chapter 3: Uncovering Thematic Structures: Community Detection and Summarization**
@@ -251,45 +288,69 @@ If the model were failing (i.e., everything is just "Europe"), we would expect t
 
 ## **Chapter 5: Conclusion**
 
-### **5.1 Synthesis of Findings**
+### **5.1 Summary of Research**
 
-This thesis embarked on an inquiry to determine if a more meaningful and structurally sound form of topic modeling could be achieved by moving beyond the dominant probabilistic paradigm. The journey began by establishing a rigorous definition of a "topic" grounded in philosophy and linguistics, defining it not as a collection of words but as a coherent system of interconnected concepts about which propositions are made. It was then demonstrated how this theoretical definition could be computationally realized through a novel methodology: constructing a knowledge graph from discourse using LLMs and identifying topics as dense, coherent communities within that graph's structure.
+This thesis has pursued a single, coherent research question: whether a graph-based approach to topic modeling, grounded in explicit knowledge representation, offers substantive advantages over traditional probabilistic methods for analyzing political discourse. The investigation proceeded from a theoretical foundation in linguistics and the philosophy of language, through methodological development, and culminated in empirical evaluation on a corpus of European Parliamentary debates.
 
-The application of this method to the 'This is Europe' parliamentary debates yielded findings that expose both the power and inherent limitations of structure-based topic modeling in highly cohesive discourse domains. The central empirical result is the persistent **dichotomy between structural coherence and semantic distinctiveness**: the Leiden algorithm consistently identified communities with high modularity scores (0.774–0.827), demonstrating genuine graph-theoretic partitioning, yet these structurally distinct communities exhibited poor semantic separation, manifested in negative silhouette scores (-0.091 to -0.184) and high topic overlap (0.38–0.52).
+The central theoretical contribution is a reformulation of "topic" from a probabilistic construct—a distribution over words—into a structural one: a densely connected subgraph within a knowledge graph. This redefinition aligns more closely with intuitive notions of thematic coherence, wherein a topic comprises not merely co-occurring terms but a network of interrelated concepts bound by explicit semantic relationships.
 
-This divergence between structural and semantic metrics is not a methodological failure but a substantive finding about the nature of parliamentary political discourse. The debates occurred during a period of unprecedented interconnected crises—the Russian invasion of Ukraine, the energy crisis, migration pressures, and post-pandemic recovery—resulting in a discourse network characterized by *thematic consilience*. European leaders did not discuss independent topics but rather multiple facets of a unified geopolitical predicament. The high structural modularity demonstrates that speakers constructed distinct *relational narratives*—different patterns of entity connections—even while employing semantically overlapping vocabulary. This represents a form of variance that distributional models, which rely solely on word co-occurrence statistics, would fail to capture.
+The methodology developed for this thesis integrates several components into a unified pipeline: ontology-guided entity and relation extraction using large language models, multi-stage filtering to ensure semantic quality, community detection via the Leiden algorithm, and hierarchical summarization that leverages the extracted graph structure. Empirical evaluation on the "This is Europe" debate corpus (2022–2024) yielded several key findings.
 
-The **hierarchical, structure-aware summarization pipeline** represents a significant methodological advancement. By explicitly providing the LLM with both graph topology (entity degrees, relationship triplets) and hierarchical context (subtopic summaries), the system generates rich analytical reports with auditable findings traceable to underlying graph structures. The successful hierarchical composition—where topic-level summaries genuinely synthesize subtopic insights rather than merely concatenating them—demonstrates that the pipeline operationalizes the graph structure into interpretable narratives. However, the pipeline also faithfully reveals the corpus's fundamental limitation: 12 of 14 topics explicitly reference "energy," "migration," or "security," confirming that structural partitioning does not necessarily yield semantically distinct themes when the source material exhibits profound thematic overlap.
+First, the extracted knowledge graphs exhibit **scale-free topology**, with degree distributions following power laws consistent with those observed in organic complex networks. This structural property serves as validation of the extraction pipeline: rather than producing artificial or random graphs, the ontology-guided LLM extraction captures the hub-and-spoke dynamics of political discourse, where certain entities—such as "Ukraine," "energy," and "European unity"—consistently serve as semantic anchors around which arguments coalesce.
 
-The validity of the approach was further substantiated by two key pieces of evidence. First, the emergent **scale-free topology** of the generated knowledge graph serves as a critical validation of the extraction pipeline itself. It confirms that the combination of ontology injection and LLM-based extraction successfully captured the organic, "hub-and-spoke" structure of real-world discourse, rather than producing a random or artificial network. Second, the qualitative alignment of computationally derived topics with independent expert analysis from the European Parliamentary Research Service confirmed their real-world relevance, demonstrating that the model identifies human-salient and politically relevant topics.
+Second, community detection identifies **structurally coherent** partitions with high modularity scores (0.774–0.827 across iterations). The Leiden algorithm's guarantee of connected communities ensures that each identified topic forms a single, cohesive unit, satisfying the graph-theoretic counterpart to the philosophical requirement of thematic coherence.
 
-### **5.2 Contribution to the Field and Theoretical Implications**
+Third, the **hierarchical, structure-aware summarization pipeline** successfully translates graph topology into interpretable, multi-faceted analytical reports. By providing the language model with explicit information about entity degrees, relationship triplets, and subtopic summaries, the system generates outputs in which every claim can be traced back to specific structural features of the underlying graph. This transparency represents a significant advantage over probabilistic topic models, where the relationship between a topic's label and the documents that instantiate it is mediated by opaque probability distributions.
 
-The conclusion of this research is that the proposed methodology, which defines topics as structurally coherent communities within an LLM-generated knowledge graph, represents both a significant conceptual advancement and a revealing diagnostic tool. It constitutes a paradigm shift from *statistical inference* to *structural representation*.
+Fourth, and perhaps most revealing, the evaluation exposed a fundamental **tension between structural coherence and semantic distinctiveness**. While modularity scores indicate strong community structure, silhouette scores remain negative (−0.091 to −0.184 at the subcommunity level), and topic overlap increases as the corpus grows. This divergence is not a methodological failure but a substantive finding: the "This is Europe" debates occurred during a period of interconnected crises—Russian aggression against Ukraine, the energy crisis, migration pressures, and post-pandemic recovery—such that European leaders discussed not independent topics but multiple facets of a unified geopolitical predicament. The negative silhouette scores quantify the degree of **thematic consilience** in European political discourse during this period.
 
-The primary **methodological contribution** lies in the hierarchical, structure-aware summarization pipeline that translates graph topology into auditable, multi-faceted analytical reports. Unlike probabilistic models that produce opaque probability distributions, this approach generates explicit knowledge structures where every claim can be traced to specific entities, relationships, and textual evidence. This transparency is particularly valuable in domains like political science and policy analysis, where interpretability and verifiability are paramount.
+### **5.2 Theoretical and Methodological Contributions**
 
-However, the research also reveals a critical **theoretical insight**: structural coherence (high modularity) does not guarantee semantic distinctiveness (positive silhouette scores) when the underlying discourse exhibits thematic consilience. Traditional clustering evaluation metrics—designed for domains where clusters should be clearly separated—may be inappropriate for deliberative discourse analysis. In parliamentary debates, "overlap" is not necessarily a modeling defect but rather a reflection of *consensus-building* and *shared crisis framing*. The negative silhouette scores quantify the degree to which European political discourse is fundamentally interconnected, a substantive finding in its own right.
+The research makes three primary contributions to the field of computational discourse analysis.
 
-This suggests that the graph-based approach excels at a different kind of differentiation: it distinguishes between *relational perspectives* and *argumentative emphases* rather than wholly distinct semantic topics. The methodology's value lies not in imposing artificial separability on cohesive corpora but in *faithfully representing* the structural variance that exists even within semantically homogeneous discourse. This honest reflection of data properties—revealing when topics genuinely overlap—prevents false claims of distinctiveness and provides analysts with a more accurate understanding of discourse structure.
+**Methodologically**, this thesis demonstrates that graph-based topic modeling is a viable and interpretable alternative to probabilistic approaches. The hierarchical summarization pipeline developed here provides a template for translating complex graph structures into human-readable analytical reports, with auditability built into every step. Unlike LDA and its variants, which produce probability distributions whose interpretability requires additional post-processing, the graph-based approach generates explicit knowledge structures where each identified topic is a concrete subgraph that can be examined, validated, and traced back to source documents.
 
-The approach thus offers a more nuanced, context-aware, and fundamentally more interpretable framework for understanding thematic structure compared to purely statistical methods. While computationally more demanding, the gains in explainability, auditability, and alignment with the graph-theoretic nature of knowledge representation suggest that this methodology is particularly well-suited for in-depth analysis of complex, interconnected discourse in political science, social science, and humanities research.
+**Theoretically**, the research reveals that standard clustering evaluation metrics—silhouette scores, separation measures—may be inappropriate for deliberative discourse. In domains where consensus-building and shared framing are central features, "overlap" between topics is not a defect but a substantive property. The graph-based approach's ability to distinguish between *relational perspectives* and *semantic topics* offers a new lens for analyzing discourse: where distributional models would see homogeneity, the structural approach can reveal variance in how entities are connected and positioned within argumentative networks.
 
-### **5.3 Limitations and Future Research Directions**
+**Practically**, the approach is particularly well-suited for in-depth analysis of complex, interconnected discourse in domains where interpretability and verifiability are paramount. Political science, policy analysis, and legal text analysis are examples where the ability to trace every claim back to specific entities and relationships may be more valuable than the computational efficiency of probabilistic methods.
 
-The findings of this study expose several important limitations that suggest directions for future research.
+### **5.3 Limitations**
 
-**Resolution Tuning and Post-Processing**: The persistent semantic overlap suggests that community detection parameters require domain-specific tuning. Future research could explore: (i) adjusting the Leiden algorithm's resolution parameter to find optimal granularity for political discourse; (ii) implementing post-processing steps to merge structurally distinct but semantically identical communities; and (iii) developing hybrid metrics that balance structural coherence with semantic distinctiveness.
+The study's findings should be interpreted in light of several limitations.
 
-**Entity Description Generation**: A critical gap identified is the lack of entity-level semantic information. Generating and embedding entity descriptions (e.g., "European Union—a political and economic union of 27 member states") could enrich the graph with semantic content, potentially improving the alignment between structural and semantic topic quality.
+**Parameter Sensitivity**: The optimal resolution parameter for community detection may vary across corpora. The current approach used fixed or empirically tuned parameters, but a more principled approach to parameter selection—perhaps informed by domain-specific considerations or cross-validation procedures—could improve robustness.
 
-**Dynamic and Temporal Analysis**: The current model produces a static snapshot of discourse. The observed degradation pattern—where topic distinctiveness decreases as the corpus grows—suggests that temporal dynamics are crucial. Future work could develop dynamic graph analysis techniques to track topic evolution, emergence, merging, and divergence over time, providing insights into the temporal structure of political discourse.
+**Semantic Enrichment**: The current pipeline extracts entities and relationships but does not generate or embed entity descriptions (e.g., "European Union—a political and economic union of 27 member states"). Such descriptions could enrich the graph with semantic content, potentially improving alignment between structural and semantic topic quality.
 
-**Cross-Lingual and Multimodal Applications**: The methodology could be extended to multilingual corpora to explore how topics are framed differently across languages. Furthermore, integrating multimodal data—such as voting records, policy documents, or even visual rhetoric—into the knowledge graph could provide richer bases for topic analysis.
+**Temporal Dynamics**: The analysis treats the corpus as a static snapshot, but political discourse evolves over time. The observed degradation pattern—where topic distinctiveness decreases as the corpus grows—suggests that temporal dynamics play a significant role. A longitudinal analysis, tracking topic emergence, merging, and divergence across time, could provide additional insights.
 
-**Domain-Specific Evaluation Metrics**: Standard clustering metrics designed for well-separated classes may be inappropriate for deliberative discourse. Future research should develop evaluation frameworks tailored to political and social science applications, potentially incorporating measures of argumentative diversity, perspectival variance, or deliberative quality alongside traditional separation metrics.
+**Evaluation Frameworks**: The study relied on standard clustering metrics (modularity, silhouette scores) that were designed for domains with clearly separated classes. For deliberative discourse, where overlap is expected and substantive, alternative evaluation frameworks that capture argumentative diversity, perspectival variance, or deliberative quality would be more appropriate. Developing such metrics is an important direction for future research.
 
-**Causal and Argumentative Analysis**: Moving beyond thematic identification, the explicit relational structure of the knowledge graph could be leveraged for advanced tasks such as causal claim extraction, argumentative structure mapping, stance detection, and influence network analysis—tasks that would be difficult or impossible with purely distributional models.
+**Corpus Scope**: The "This is Europe" corpus, while well-suited for testing the method's ability to handle thematic consilience, may not be representative of all political discourse. Application to corpora with more distinct thematic divisions—such as debates on specific policy areas or cross-national comparisons—could validate whether the observed tension between structural coherence and semantic distinctiveness is domain-specific.
+
+### **5.4 Future Research Directions**
+
+Several promising directions emerge from this research.
+
+**Knowledge Graph Embeddings and Link Prediction**: The current pipeline does not exploit knowledge graph embeddings (KGEs) for link prediction. Models such as TransE, ComplEx, and RotatE learn vector space representations that capture complex relational patterns and can predict missing edges with high accuracy. Applying these techniques could enable (i) inference of implicitly mentioned relationships that the LLM extraction missed, (ii) identification of structurally anomalous connections, and (iii) generation of entity descriptions through neighborhood aggregation.
+
+**Graph Neural Topic Models**: The topic modeling literature has seen advances in integrating graph-based regularization into neural topic models. The Graph Neural Topic Model (GNTM) uses document graphs to regularize topic distributions, while TextGCN builds heterogeneous graphs of words and documents for joint learning of word and document embeddings. The Node2Vec approach used in this thesis can be viewed as a simpler, unsupervised precursor to these more sophisticated architectures.
+
+**Retrieval-Augmented Generation**: Recent developments in graph-based RAG systems—such as GraphRAG and LightRAG—demonstrate how entity knowledge graphs with hierarchical community summaries can improve question answering over large text corpora. These developments validate the central insight of this thesis: structuring text as a knowledge graph enables more principled and interpretable access to large discourse corpora. Future work could implement a GraphRAG-style interface for querying the parliamentary debates using natural language.
+
+**Dynamic Graph Analysis**: Developing techniques to track topic evolution over time would address the temporal limitations of the current analysis. Dynamic graph models, incremental community detection, and temporal embedding methods could provide insights into how political discourse shifts in response to events and policy developments.
+
+**Cross-Lingual and Multimodal Extensions**: The methodology could be extended to multilingual corpora to explore how topics are framed differently across languages. Integration of multimodal data—voting records, policy documents, or visual elements—could provide richer bases for analysis.
+
+**Causal and Argumentative Analysis**: The explicit relational structure of the knowledge graph could be leveraged for tasks beyond topic identification, such as causal claim extraction, argumentative structure mapping, stance detection, and influence network analysis. These tasks would be difficult or impossible with purely distributional models.
+
+### **5.5 Final Reflections**
+
+This research concludes that defining topics as structurally coherent communities within a knowledge graph represents a viable alternative to the dominant probabilistic paradigm. While the approach is computationally more demanding, the gains in explainability, auditability, and alignment with the graph-theoretic nature of knowledge representation suggest it is well-suited for domains where interpretability is paramount.
+
+The tension between structural coherence and semantic distinctiveness observed in the "This is Europe" corpus is not a limitation of the method but a substantive finding about the nature of contemporary European political discourse: a period characterized by interconnected crises and consilient framing. The graph-based approach's ability to faithfully represent this property—rather than artificially imposing separability where none exists—demonstrates its value as a diagnostic tool as much as a topic modeling technique.
+
+Future work in knowledge graph-based discourse analysis, graph neural topic models, and graph-enhanced retrieval systems will likely build on the insights developed here. The convergence of these fields suggests that graph-based methods will play an increasingly important role in computational social science, policy analysis, and the broader study of political communication.
 
 ---
 
@@ -336,4 +397,23 @@ Grover, A. & Leskovec, J. (2016) 'node2vec: Scalable feature learning for networ
 Giles, H. (2016) 'Communication Accommodation Theory', in Berger, C. R. & Roloff, M. E. (eds.) *The International Encyclopedia of Interpersonal Communication*. Hoboken: Wiley, pp. 1-18.
 
 Rousseeuw, P. J. (1987) 'Silhouettes: A graphical aid to the interpretation and validation of cluster analysis', *Journal of Computational and Applied Mathematics*, 20, pp. 53-65.
+
+**Knowledge Graphs and Graph Neural Networks**
+
+Ji, S., Pan, S., Cambria, E., Zhou, B. & Bian, Y. (2022) 'A Survey on Knowledge Graphs: Representation, Acquisition, and Applications', *IEEE Transactions on Neural Networks and Learning Systems*, 33(2), pp. 494-514. DOI: 10.1109/TNNLS.2021.3070843.
+
+Sun, Z., Deng, Z.-H., Nie, J.-Y. & Tang, J. (2019) 'RotatE: Knowledge Graph Embedding by Relational Rotation in Complex Space', *Proceedings of the 7th International Conference on Learning Representations (ICLR)*.
+
+Trouillon, T., Welbl, J., Riedel, S., Gaussier, E. & Bouchard, G. (2016) 'Complex Embeddings for Simple Link Prediction', *Proceedings of the 33rd International Conference on Machine Learning (ICML)*, pp. 2075-2084.
+
+Xie, Z., Wang, J., Huang, Y., Peng, H. & Liu, Y. (2021) 'Knowledge Graph Enhanced Neural Topic Model', *arXiv preprint arXiv:2110.11942*.
+
+Yao, L., Shu, C., Liu, S., Zou, Y., Yang, J. & Liu, M. (2019) 'TextGCN: Word Graph Convolutional Network for Text Classification', *Proceedings of the 33rd AAAI Conference on Artificial Intelligence (AAAI)*, pp. 7456-7463.
+
+**Graph-Based Retrieval and Topic Modeling**
+
+Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., Metropolitansky, D. & Larson, J. (2024) 'From Local to Global: A Graph RAG Approach to Query-Focused Summarization', *arXiv preprint arXiv:2404.16130*.
+
+Guo, Z., Xia, L., Yu, Y., Ao, T. & Huang, C. (2024) 'LightRAG: Simple and Fast Retrieval-Augmented Generation', *arXiv preprint arXiv:2410.05779*.
+
 
