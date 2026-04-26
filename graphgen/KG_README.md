@@ -57,15 +57,23 @@ python3 -m graphgen.main
 
 ## Pipeline Stages
 
-1. **Lexical Graph Construction**: Build document/segment/chunk hierarchy.
-2. **Entity Extraction**: Extract entities and relations using configured backends.
-3. **Semantic Enrichment**: Generate embeddings and resolve duplicates.
-4. **Community Detection**: Cluster entities into topics/subtopics.
+Standard pipeline (`graphgen.main` -> `KnowledgePipeline`):
+
+1. **Lexical Graph Construction**: Build a heterogeneous document/segment/chunk scaffold.
+2. **Entity Extraction**: Run NER-guided constrained entity-relation extraction on chunks.
+3. **Semantic Enrichment**: Generate embeddings and attempt duplicate resolution.
+4. **Community Detection**: Cluster the entity-relation subgraph into topics/subtopics.
 5. **Summarization**: Generate LLM summaries for communities.
 6. **Topic Analysis** (optional): Statistical separation tests on embeddings.
 7. **Pruning**: Cleanup and simplify low-value nodes/edges.
-8. **Upload**: Persist to Neo4j if configured.
+8. **Upload**: Persist to Neo4j as the final runtime step.
 9. **Artifacts**: Save GraphML and analysis outputs.
+
+Iterative experimental pipeline (`IterativeOrchestrator`):
+- Repeats extraction over cumulative batches.
+- Uses real sentence-transformer embeddings for entity resolution.
+- Can optionally apply Node2Vec-based edge weighting before Leiden.
+- Uploads only the final cumulative graph.
 
 ## Operational Notes
 
