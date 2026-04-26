@@ -212,14 +212,20 @@ Inherit from `graphgen.utils.parsers.base.BaseDocumentParser` and implement the 
 The `KnowledgePipeline` class in `graphgen.orchestrator.py` defines the sequence of steps. You can subclass it or modify the `run` method to inject new steps (e.g. specialized topic modeling).
 
 ### Pipeline Steps (in order)
-1. **Lexical Graph Building**: Document parsing and chunking
-2. **Entity Extraction**: NLP-based entity and relation extraction
-3. **Semantic Enrichment**: RAG embeddings and entity resolution
-4. **Community Detection**: Leiden algorithm
-5. **Topic Analysis** (optional): Statistical separation tests
-6. **Pruning**: Graph cleanup
-7. **Upload**: Database persistence
-8. **Artifacts**: GraphML and report generation
+1. **Lexical Graph Building**: Build a heterogeneous document/segment/chunk scaffold.
+2. **Entity Extraction**: Run NER-guided constrained entity and relation extraction.
+3. **Semantic Enrichment**: Generate embeddings and perform entity resolution.
+4. **Community Detection**: Run Leiden on the entity-relation subgraph to derive topics and subtopics.
+5. **Summarization**: Generate LLM summaries for communities.
+6. **Topic Analysis** (optional): Run statistical separation tests.
+7. **Pruning**: Graph cleanup.
+8. **Upload**: Database persistence.
+9. **Artifacts**: GraphML and report generation.
+
+Notes:
+- Ontology-derived labels are optional guidance for extraction, not a fully injected symbolic ontology graph.
+- Node2Vec edge weighting belongs to the iterative experimental workflow, not the default standard pipeline.
+- In the current standard pipeline, Neo4j reachability is checked before execution; iterative mode uploads only the final cumulative graph.
 
 ---
 
