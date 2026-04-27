@@ -17,6 +17,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 
+from graphgen.config.llm import _extract_secret
 from graphgen.config.llm import get_langchain_llm
 from graphgen.pipeline.entity_relation.dspy_module import GraphExtractorModule
 import dspy
@@ -196,30 +197,19 @@ class DSPyExtractor(BaseExtractor):
     def __init__(self, config: Dict[str, Any]):
         """Initialize with config."""
         self.config = config
-        
+
         # Configure DSPy with the LLM from config
         llm_config = config.get('llm', {})
         # Flatten if it's a pydantic model dump
         if hasattr(llm_config, 'model_dump'):
             llm_config = llm_config.model_dump()
-            
+
         # Try to find the best model name from config
         model = llm_config.get('extraction_model') or llm_config.get('base_model') or llm_config.get('model') or 'gpt-4o'
-        
+
         # Check for Groq API Key
-        groq_api_key = None
         infra_config = config.get('infra', {})
-        if hasattr(infra_config, 'model_dump'):
-            infra_config = infra_config.model_dump()
-            
-        # Try to get key from infra config or direct LLM config or env
-        val = infra_config.get('groq_api_key') or llm_config.get('groq_api_key')
-        if val:
-             if hasattr(val, 'get_secret_value'):
-                 groq_api_key = val.get_secret_value()
-             else:
-                 groq_api_key = str(val)
-        
+        groq_api_key = _extract_secret(infra_config, 'groq_api_key') or _extract_secret(llm_config, 'groq_api_key')
         if not groq_api_key:
             groq_api_key = os.environ.get('GROQ_API_KEY')
 
@@ -228,9 +218,10 @@ class DSPyExtractor(BaseExtractor):
              if groq_api_key:
                  # Configure for Groq using OpenAI compatibility
                  logger.info(f"Configuring DSPy for Groq with model {model}")
+                 groq_model = model if model.startswith("groq/") else f"groq/{model}"
                  lm = dspy.LM(
-                     model=model, 
-                     api_key=groq_api_key, 
+                     model=groq_model,
+                     api_key=groq_api_key,
                      api_base="https://api.groq.com/openai/v1",
                      temperature=0.0,
                      max_tokens=2048
@@ -238,22 +229,22 @@ class DSPyExtractor(BaseExtractor):
                  dspy.configure(lm=lm)
              else:
                  # Fallback to OpenAI or other default
-                 api_key = llm_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
+                 api_key = _extract_secret(llm_config, 'api_key') or os.environ.get('OPENAI_API_KEY')
                  base_url = llm_config.get('base_url')
                  lm = dspy.LM(
-                     model=model, 
-                     api_key=api_key, 
+                     model=model,
+                     api_key=api_key,
                      api_base=base_url,
                      temperature=0.0,
                      max_tokens=2048
                  )
                  dspy.configure(lm=lm)
-                 
+
         except Exception as e:
              logger.warning(f"Failed to configure DSPy LM: {e}")
              # Fallback or already configured
              pass
-        
+
         self.module = GraphExtractorModule()
         logger.info(f"Initialized DSPy extractor with model {model}")
 
@@ -300,9 +291,6 @@ class DSPyExtractor(BaseExtractor):
                         target = getattr(triplet, 'target', None)
                         source_type = getattr(triplet, 'source_type', None)
                         target_type = getattr(triplet, 'target_type', None)
-                    
-                        source_type = getattr(triplet, 'source_type', None)
-                        target_type = getattr(triplet, 'target_type', None)
                         confidence = getattr(triplet, 'confidence', 1.0)
                         evidence = getattr(triplet, 'evidence', "")
                     
@@ -335,24 +323,28 @@ class DSPyExtractor(BaseExtractor):
 
 def get_extractor(config: Dict[str, Any]) -> BaseExtractor:
     """
-    Factory function to get the appropriate extractor based on config.
-    
-    Args:
-        config: Configuration dictionary
-        
-    Returns:
-        Configured extractor instance
+    Factory function to get the appropriate relation extractor based on config.
+
+    The legacy `extraction.backend` flag is overloaded: values like `gliner`,
+    `gliner2`, and `spacy` select the NER backend, while `llm`/`dspy` select
+    relation extraction behavior. To preserve backward compatibility, any
+    non-`llm` backend defaults to the DSPy relation extractor.
     """
-    # Look for backend in extraction settings
     extraction_config = config.get('extraction', {})
     if hasattr(extraction_config, 'model_dump'):
         extraction_config = extraction_config.model_dump()
-        
-    extractor_type = extraction_config.get('backend', 'dspy') # Default to dspy now
-    
-    logger.info(f"Initializing graph extractor: {extractor_type}")
-    
-    if extractor_type == 'dspy':
+
+    ner_backend = extraction_config.get('ner_backend') or extraction_config.get('backend', 'dspy')
+    relation_backend = extraction_config.get('relation_backend')
+    if not relation_backend:
+        relation_backend = 'langchain' if ner_backend == 'llm' else 'dspy'
+
+    logger.info(
+        f"Initializing graph extractor: relation_backend={relation_backend} "
+        f"(configured backend={ner_backend})"
+    )
+
+    if relation_backend == 'dspy':
         return DSPyExtractor(config)
-    
+
     return LangChainExtractor(config)

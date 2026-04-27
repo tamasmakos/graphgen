@@ -162,9 +162,9 @@ class KnowledgePipeline:
         
         # Basic check via uploader connectivity
         if self.uploader and not self.uploader.connect():
-            error_msg = "Preflight check failed: Neo4j is not reachable."
-            logger.critical(f"{error_msg} Aborting pipeline.")
-            raise ConnectionError(error_msg)
+            logger.warning("Preflight check failed: Neo4j is not reachable. Continuing without uploader.")
+            self.uploader = None
+            return
         if self.uploader:
             self.uploader.close() # Close after check
 
@@ -203,7 +203,6 @@ class KnowledgePipeline:
             logger.info("  3.1: Generating RAG Embeddings...")
             generate_rag_embeddings(ctx.graph)
             
-            logger.info("  3.2: Semantic Resolution...")
             logger.info("  3.2: Semantic Resolution...")
             resolution_stats = resolve_entities_semantically(ctx.graph)
             ctx.stats['entity_resolution'] = resolution_stats
