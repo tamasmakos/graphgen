@@ -10,10 +10,9 @@ import torch
 # --- Graphgen Imports ---
 from graphgen.data_types import PipelineContext, ChunkExtractionTask
 from graphgen.pipeline.entity_relation.extractors import BaseExtractor, get_extractor
-from graphgen.pipeline.graph_cleaning.canonicalization import (
-    classify_surface_form,
-    normalize_surface_form,
-)
+from graphgen.evaluation import summarize_entity_resolution_effects
+from graphgen.pipeline.graph_cleaning.canonicalization import classify_surface_form
+from graphgen.pipeline.graph_cleaning.canonicalization import normalize_surface_form
 from graphgen.prototype_gliner2_ontology import (
     build_top_level_label_space,
     build_gliner2_schema,

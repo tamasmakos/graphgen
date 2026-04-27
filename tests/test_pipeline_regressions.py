@@ -307,10 +307,40 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
             )
             pipeline = KnowledgePipeline(settings=settings, uploader=None, extractor=None)
             ctx = PipelineContext(graph=nx.DiGraph())
-            ctx.diagnostics = {"chunk_diagnostics": ["/tmp/a.json"]}
+            ctx.diagnostics = {"chunk_diagnostics": ["/tmp/a.json"], "entity_resolution_diagnostics": "/tmp/b.json"}
             pipeline._step_save_artifacts(ctx)
             diag_index = Path(tmpdir) / "diagnostics" / "diagnostic_index.json"
             self.assertTrue(diag_index.exists())
+            payload = json.loads(diag_index.read_text())
+            self.assertIn("entity_resolution_diagnostics", payload)
+
+    async def test_enrichment_writes_entity_resolution_diagnostics_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = PipelineSettings(
+                infra={"input_dir": "input", "output_dir": tmpdir},
+                analytics={"save_provenance": False},
+                analysis={"topic_separation_test": False},
+                extraction={"diagnostic_mode": True, "diagnostic_output_subdir": "diagnostics"},
+            )
+            pipeline = KnowledgePipeline(settings=settings, uploader=None, extractor=None)
+            ctx = PipelineContext(graph=nx.DiGraph())
+            ctx.stats["pipeline_config"] = settings.model_dump()
+            ctx.graph.add_node("ECB_1", node_type="ENTITY_CONCEPT", name="EUROPEAN_CENTRAL_BANK", embedding=[1.0, 0.0])
+            ctx.graph.add_node("ECB_2", node_type="ENTITY_CONCEPT", name="European Central Bank", embedding=[1.0, 0.0])
+            ctx.graph.add_node("MARIO_DRAGHI", node_type="ENTITY_CONCEPT", name="MARIO_DRAGHI", embedding=[0.0, 1.0])
+            ctx.graph.add_edge("MARIO_DRAGHI", "ECB_1", label="LEADS")
+            ctx.graph.add_edge("MARIO_DRAGHI", "ECB_2", label="LEADS")
+
+            with patch("graphgen.pipeline.embeddings.rag.generate_rag_embeddings", return_value=None):
+                await pipeline._step_enrichment(ctx)
+
+            self.assertIn("entity_resolution_diagnostics", ctx.diagnostics)
+            diag_path = Path(ctx.diagnostics["entity_resolution_diagnostics"])
+            self.assertTrue(diag_path.exists())
+            payload = json.loads(diag_path.read_text())
+            self.assertIn("entity_resolution", payload)
+            self.assertIn("evaluation", payload)
+            self.assertIn("merged_pairs", payload["entity_resolution"])
 
     async def test_chunk_diagnostics_include_full_entity_and_relation_context(self):
         ctx = PipelineContext()
