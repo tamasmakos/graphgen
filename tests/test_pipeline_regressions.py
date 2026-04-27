@@ -16,6 +16,7 @@ from graphgen.orchestrator import KnowledgePipeline
 from graphgen.pipeline.entity_relation.extraction import (
     _extract_entities_for_chunk,
     _build_relation_eligible_entities,
+    extract_relations_with_llm_async,
     process_extraction_task,
 )
 from graphgen.utils.labels import resolve_entity_labels
@@ -252,6 +253,26 @@ class DSPyConfigRegressionTests(unittest.TestCase):
     def test_get_extractor_honors_explicit_relation_backend(self):
         extractor = get_extractor({"extraction": {"ner_backend": "gliner2", "relation_backend": "langchain"}})
         self.assertIsInstance(extractor, LangChainExtractor)
+    def test_extract_relations_with_llm_async_accepts_legacy_two_tuple_result(self):
+        class LegacyExtractor:
+            async def extract_relations(self, **kwargs):
+                return (
+                    [("MARIO_DRAGHI", "LED", "ITALY", {"confidence": 0.9})],
+                    [{"id": "MARIO_DRAGHI", "type": "PERSON", "properties": {}}],
+                )
+
+        relations, nodes, diagnostics = asyncio.run(
+            extract_relations_with_llm_async(
+                text="Mario Draghi led Italy.",
+                extractor=LegacyExtractor(),
+                entities=["MARIO_DRAGHI", "ITALY"],
+                abstract_concepts=["PERSON", "LOCATION"],
+            )
+        )
+
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(diagnostics, {})
 
 
 class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -302,6 +323,40 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
                 return (
                     [("MARIO_DRAGHI", "LED", "ITALY", {"confidence": 0.9, "evidence": "Mario Draghi led Italy"})],
                     [{"id": "MARIO_DRAGHI", "type": "PERSON", "properties": {}}, {"id": "ITALY", "type": "LOCATION", "properties": {}}],
+                    {
+                        "raw_triplets": [
+                            {
+                                "source": "MARIO_DRAGHI",
+                                "relation": "LED",
+                                "target": "ITALY",
+                                "confidence": 0.9,
+                                "evidence": "Mario Draghi led Italy",
+                            },
+                            {
+                                "source": "COUNTRY",
+                                "relation": "GUIDED",
+                                "target": "ITALY",
+                                "confidence": 0.2,
+                                "evidence": "Mario Draghi led Italy",
+                            },
+                        ],
+                        "triplet_decisions": [
+                            {
+                                "source": "MARIO_DRAGHI",
+                                "relation": "LED",
+                                "target": "ITALY",
+                                "kept": True,
+                                "drop_reason": None,
+                            },
+                            {
+                                "source": "COUNTRY",
+                                "relation": "GUIDED",
+                                "target": "ITALY",
+                                "kept": False,
+                                "drop_reason": "source_not_grounded_in_hints",
+                            },
+                        ],
+                    },
                 )
 
         fake_entities = [
@@ -353,7 +408,13 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("raw_nodes", payload)
         self.assertIn("accepted_relations", payload)
         self.assertIn("accepted_nodes", payload)
+        self.assertIn("relation_decisions", payload)
+        self.assertIn("raw_triplets", payload)
+        self.assertTrue(payload["relation_diagnostics_available"])
         self.assertEqual(payload["accepted_relations"][0][0], "MARIO_DRAGHI")
+        self.assertEqual(len(payload["relation_decisions"]), 2)
+        self.assertTrue(payload["relation_decisions"][0]["kept"])
+        self.assertEqual(payload["relation_decisions"][1]["drop_reason"], "source_not_grounded_in_hints")
 
     async def test_segment_diagnostics_include_final_entities_and_relations(self):
         ctx = PipelineContext(graph=nx.DiGraph())

@@ -349,6 +349,8 @@ class DSPyExtractor(BaseExtractor):
             relations = []
             nodes_data = []
             seen_nodes = set()
+            raw_triplets = []
+            triplet_decisions = []
             
             # triplets is expected to be a list of Triplet objects (pydantic models)
             if triplets:
@@ -360,6 +362,8 @@ class DSPyExtractor(BaseExtractor):
                         target = triplet.get('target')
                         source_type = triplet.get('source_type')
                         target_type = triplet.get('target_type')
+                        confidence = triplet.get('confidence', 1.0)
+                        evidence = triplet.get('evidence', "")
                     else:
                         source = getattr(triplet, 'source', None)
                         relation = getattr(triplet, 'relation', None)
@@ -368,56 +372,99 @@ class DSPyExtractor(BaseExtractor):
                         target_type = getattr(triplet, 'target_type', None)
                         confidence = getattr(triplet, 'confidence', 1.0)
                         evidence = getattr(triplet, 'evidence', "")
-                    
-                    if source and relation and target:
-                        if not _relation_endpoints_in_hints(source, target, entity_hints):
-                            logger.debug(
-                                "Dropping DSPy triplet without both endpoints grounded in hints source=%s relation=%s target=%s",
-                                source,
-                                relation,
-                                target,
-                            )
-                            continue
-                        if _is_ungrounded_relation_triplet(
+
+                    raw_triplet = {
+                        "source": source,
+                        "relation": relation,
+                        "target": target,
+                        "source_type": source_type,
+                        "target_type": target_type,
+                        "confidence": confidence,
+                        "evidence": evidence,
+                    }
+                    raw_triplets.append(raw_triplet)
+
+                    if not (source and relation and target):
+                        triplet_decisions.append({
+                            **raw_triplet,
+                            "kept": False,
+                            "drop_reason": "missing_triplet_field",
+                            "source_matches_hint": _endpoint_matches_hint(source, entity_hints),
+                            "target_matches_hint": _endpoint_matches_hint(target, entity_hints),
+                            "source_grounded": _is_grounded_relation_endpoint(source, entity_hints, ontology_classes, evidence),
+                            "target_grounded": _is_grounded_relation_endpoint(target, entity_hints, ontology_classes, evidence),
+                        })
+                        continue
+
+                    decision = {
+                        **raw_triplet,
+                        "kept": False,
+                        "drop_reason": None,
+                        "source_matches_hint": _endpoint_matches_hint(source, entity_hints),
+                        "target_matches_hint": _endpoint_matches_hint(target, entity_hints),
+                        "source_grounded": _is_grounded_relation_endpoint(source, entity_hints, ontology_classes, evidence),
+                        "target_grounded": _is_grounded_relation_endpoint(target, entity_hints, ontology_classes, evidence),
+                    }
+
+                    if not _relation_endpoints_in_hints(source, target, entity_hints):
+                        decision["drop_reason"] = "endpoint_not_grounded_in_hints"
+                        triplet_decisions.append(decision)
+                        logger.debug(
+                            "Dropping DSPy triplet without both endpoints grounded in hints source=%s relation=%s target=%s",
                             source,
+                            relation,
                             target,
-                            entity_hints,
-                            ontology_classes,
+                        )
+                        continue
+                    if _is_ungrounded_relation_triplet(
+                        source,
+                        target,
+                        entity_hints,
+                        ontology_classes,
+                        evidence,
+                    ):
+                        decision["drop_reason"] = "endpoint_not_grounded_after_evidence_check"
+                        triplet_decisions.append(decision)
+                        logger.debug(
+                            "Dropping ungrounded DSPy triplet source=%s relation=%s target=%s evidence=%s",
+                            source,
+                            relation,
+                            target,
                             evidence,
-                        ):
-                            logger.debug(
-                                "Dropping ungrounded DSPy triplet source=%s relation=%s target=%s evidence=%s",
-                                source,
-                                relation,
-                                target,
-                                evidence,
-                            )
-                            continue
-                        # Standardize upstream
-                        source = standardize_label(source)
-                        target = standardize_label(target)
-                        relation = standardize_label(relation)
-                        source_type = standardize_label(source_type) if source_type else "ENTITY"
-                        target_type = standardize_label(target_type) if target_type else "ENTITY"
+                        )
+                        continue
+
+                    decision["kept"] = True
+                    triplet_decisions.append(decision)
+
+                    # Standardize upstream
+                    source = standardize_label(source)
+                    target = standardize_label(target)
+                    relation = standardize_label(relation)
+                    source_type = standardize_label(source_type) if source_type else "ENTITY"
+                    target_type = standardize_label(target_type) if target_type else "ENTITY"
+                    
+                    props = {
+                        "confidence": confidence,
+                        "evidence": evidence
+                    }
+                    relations.append((source, relation, target, props))
+                    
+                    if source not in seen_nodes:
+                        nodes_data.append({"id": source, "type": source_type, "properties": {}})
+                        seen_nodes.add(source)
+                    if target not in seen_nodes:
+                        nodes_data.append({"id": target, "type": target_type, "properties": {}})
+                        seen_nodes.add(target)
                         
-                        props = {
-                            "confidence": confidence,
-                            "evidence": evidence
-                        }
-                        relations.append((source, relation, target, props))
-                        
-                        if source not in seen_nodes:
-                            nodes_data.append({"id": source, "type": source_type, "properties": {}})
-                            seen_nodes.add(source)
-                        if target not in seen_nodes:
-                            nodes_data.append({"id": target, "type": target_type, "properties": {}})
-                            seen_nodes.add(target)
-                        
-            return relations, nodes_data
+            return relations, nodes_data, {
+                "raw_triplets": raw_triplets,
+                "triplet_decisions": triplet_decisions,
+            }
             
         except Exception as e:
             logger.error(f"DSPy extraction failed: {e}", exc_info=True)
-            return [], []
+            return [], [], {}
 
 def get_extractor(config: Dict[str, Any]) -> BaseExtractor:
     """

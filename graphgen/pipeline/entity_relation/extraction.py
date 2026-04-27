@@ -155,21 +155,30 @@ async def extract_relations_with_llm_async(
     keywords: List[str] = None,
     entities: List[str] = None,
     abstract_concepts: List[str] = None
-) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]]]:
+) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]], Dict[str, Any]]:
     """Extract relations using configured extractor."""
     if not extractor or not text:
-        return [], []
+        return [], [], {}
 
     try:
-        return await extractor.extract_relations(
+        result = await extractor.extract_relations(
             text=text,
             keywords=keywords,
             entities=entities,
             abstract_concepts=abstract_concepts
         )
+        if isinstance(result, tuple):
+            if len(result) == 3:
+                relations, nodes, diagnostics = result
+                return relations or [], nodes or [], diagnostics or {}
+            if len(result) == 2:
+                relations, nodes = result
+                return relations or [], nodes or [], {}
+        logger.warning("Extractor returned unexpected result shape; treating as empty extraction")
+        return [], [], {}
     except Exception as e:
         logger.error(f"Extraction failed: {str(e)}")
-        return [], []
+        return [], [], {}
 
 
 async def _extract_entities_for_chunk(
@@ -422,7 +431,7 @@ async def process_extraction_task(
                 }
             
             # Run LLM Relation Extraction
-            raw_relations, raw_nodes = await extract_relations_with_llm_async(
+            raw_relations, raw_nodes, relation_diagnostics = await extract_relations_with_llm_async(
                 text=task.chunk_text,
                 extractor=extractor,
                 keywords=task.keywords,
@@ -436,6 +445,9 @@ async def process_extraction_task(
                     'raw_nodes': raw_nodes,
                     'accepted_relations': raw_relations,
                     'accepted_nodes': raw_nodes,
+                    'relation_decisions': relation_diagnostics.get('triplet_decisions', []),
+                    'raw_triplets': relation_diagnostics.get('raw_triplets', []),
+                    'relation_diagnostics_available': bool(relation_diagnostics),
                 })
                 chunk_diag_path = write_diagnostic_json(config, f'extraction_chunk_{task.chunk_id}', chunk_diag_payload)
                 deps.diagnostics.setdefault('chunk_diagnostics', []).append(chunk_diag_path)
