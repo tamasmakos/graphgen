@@ -313,6 +313,39 @@ async def _extract_entities_for_chunk(
 
     return []
 
+
+def _build_relation_eligible_entities(gliner_entities: List[Dict[str, Any]]) -> List[str]:
+    eligible = []
+    fallback = []
+
+    for entity in gliner_entities or []:
+        text = standardize_label(entity.get('text', ''))
+        ontology_label = standardize_label(entity.get('ontology_label') or entity.get('label', ''))
+        confidence = float(entity.get('confidence', 0.0) or 0.0)
+
+        if not text:
+            continue
+
+        fallback.append(text)
+
+        if len(text) <= 3 and '_' not in text and ontology_label in {'PERSON', 'ORGANIZATION', 'LOCATION'}:
+            continue
+        if ontology_label == 'PERSON' and '_' not in text:
+            continue
+        if ontology_label == 'EVENT' and confidence < 0.5:
+            continue
+        if ontology_label == 'ORGANIZATION' and confidence < 0.6:
+            continue
+        if ontology_label == 'LOCATION' and confidence < 0.6:
+            continue
+
+        eligible.append(text)
+
+    deduped_eligible = list(dict.fromkeys(eligible))
+    if deduped_eligible:
+        return deduped_eligible
+    return list(dict.fromkeys(fallback))
+
 async def process_extraction_task(
     deps: PipelineContext,
     task: ChunkExtractionTask,
@@ -366,11 +399,10 @@ async def process_extraction_task(
             if task.entities:
                 discovered_entities.extend(task.entities)
             if gliner_entities:
-                gliner_texts = [e.get('text') for e in gliner_entities if e.get('text')]
-                discovered_entities.extend(gliner_texts)
+                discovered_entities.extend(_build_relation_eligible_entities(gliner_entities))
             
             # Deduplicate Discoveries
-            discovered_entities = list(set(discovered_entities))
+            discovered_entities = list(dict.fromkeys(discovered_entities))
 
             if diagnostics_enabled(config):
                 chunk_diag_payload = {

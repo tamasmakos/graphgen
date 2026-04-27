@@ -15,6 +15,7 @@ from graphgen.data_types import ChunkExtractionTask, PipelineContext
 from graphgen.orchestrator import KnowledgePipeline
 from graphgen.pipeline.entity_relation.extraction import (
     _extract_entities_for_chunk,
+    _build_relation_eligible_entities,
     process_extraction_task,
 )
 from graphgen.utils.labels import resolve_entity_labels
@@ -24,6 +25,7 @@ from graphgen.pipeline.entity_relation.extractors import (
     _candidate_grounded_in_evidence,
     _is_grounded_relation_endpoint,
     _is_ungrounded_relation_triplet,
+    _relation_endpoints_in_hints,
     get_extractor,
 )
 from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
@@ -151,6 +153,10 @@ class DSPyConfigRegressionTests(unittest.TestCase):
 
     def test_ungrounded_relation_triplet_keeps_grounded_entity_pair(self):
         self.assertFalse(_is_ungrounded_relation_triplet("ENERGY_DEPENDENCE", "KREMLIN", ["ENERGY_DEPENDENCE", "KREMLIN"], ["POLICY_INSTRUMENT", "ORGANIZATION"], "energy dependence on the Kremlin"))
+
+    def test_relation_endpoints_in_hints_requires_both_endpoints(self):
+        self.assertTrue(_relation_endpoints_in_hints("ENERGY_DEPENDENCE", "KREMLIN", ["ENERGY_DEPENDENCE", "KREMLIN"]))
+        self.assertFalse(_relation_endpoints_in_hints("PRIME_MINISTER", "COUNTRY", ["PRIME_MINISTER"]))
 
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.configure")
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.LM")
@@ -311,6 +317,28 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
+    def test_build_relation_eligible_entities_prefers_grounded_named_entities(self):
+        entities = [
+            {"text": "MARIO_DRAGHI", "ontology_label": "PERSON", "confidence": 0.99},
+            {"text": "PRIME_MINISTER", "ontology_label": "PERSON", "confidence": 0.999},
+            {"text": "UKRAINE", "ontology_label": "LOCATION", "confidence": 0.98},
+            {"text": "AID", "ontology_label": "POLICY_INSTRUMENT", "confidence": 0.84},
+            {"text": "WE", "ontology_label": "ORGANIZATION", "confidence": 0.99},
+        ]
+        eligible = _build_relation_eligible_entities(entities)
+        self.assertIn("MARIO_DRAGHI", eligible)
+        self.assertIn("UKRAINE", eligible)
+        self.assertIn("AID", eligible)
+        self.assertNotIn("WE", eligible)
+
+    def test_build_relation_eligible_entities_falls_back_to_all_entities_when_filter_is_empty(self):
+        entities = [
+            {"text": "WE", "ontology_label": "ORGANIZATION", "confidence": 0.99},
+            {"text": "US", "ontology_label": "ORGANIZATION", "confidence": 0.99},
+        ]
+        eligible = _build_relation_eligible_entities(entities)
+        self.assertEqual(sorted(eligible), ["US", "WE"])
+
     async def test_process_extraction_task_uses_ontology_labels_for_node_filtering(self):
         ctx = PipelineContext()
         chunk_id = "chunk-ontology-filter"
@@ -345,6 +373,7 @@ class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(extractor.kwargs["abstract_concepts"], ["POLICY_INSTRUMENT"])
+        self.assertEqual(extractor.kwargs["entities"], ["HEALTH"])
 
     async def test_process_extraction_task_counts_gliner_entities_when_llm_returns_no_relations(self):
         ctx = PipelineContext()

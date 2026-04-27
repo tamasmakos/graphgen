@@ -77,8 +77,13 @@ def _is_ungrounded_relation_triplet(
     )
 
 
+def _relation_endpoints_in_hints(source: str, target: str, entity_hints: List[str]) -> bool:
+    hint_set = {_normalize_relation_candidate(item) for item in (entity_hints or []) if item}
+    return _normalize_relation_candidate(source) in hint_set and _normalize_relation_candidate(target) in hint_set
+
 
 DEFAULT_EXTRACTION_PROMPT = ChatPromptTemplate.from_template(
+
     """You are an expert at extracting knowledge graph entities and relationships from text.    
     Text:
     {input}
@@ -344,6 +349,14 @@ class DSPyExtractor(BaseExtractor):
                         evidence = getattr(triplet, 'evidence', "")
                     
                     if source and relation and target:
+                        if not _relation_endpoints_in_hints(source, target, entity_hints):
+                            logger.debug(
+                                "Dropping DSPy triplet without both endpoints grounded in hints source=%s relation=%s target=%s",
+                                source,
+                                relation,
+                                target,
+                            )
+                            continue
                         if _is_ungrounded_relation_triplet(
                             source,
                             target,
