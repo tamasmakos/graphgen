@@ -1,6 +1,8 @@
 import asyncio
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from graphgen.config.llm import get_langchain_llm
@@ -18,6 +20,30 @@ from graphgen.pipeline.entity_relation.extractors import (
     get_extractor,
 )
 from graphgen.pipeline.summarization.summarizer import DSPySummarizer
+from graphgen.main import resolve_env_file
+
+
+class MainEnvResolutionRegressionTests(unittest.TestCase):
+    def test_resolve_env_file_prefers_repo_root_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            graphgen_dir = repo / "graphgen"
+            graphgen_dir.mkdir()
+            main_file = graphgen_dir / "main.py"
+            main_file.write_text("# stub", encoding="utf-8")
+            repo_env = repo / ".env"
+            package_env = graphgen_dir / ".env"
+            repo_env.write_text("GROQ_API_KEY=root\n", encoding="utf-8")
+            package_env.write_text("GROQ_API_KEY=package\n", encoding="utf-8")
+
+            with patch("graphgen.main.__file__", str(main_file)), patch.dict(os.environ, {}, clear=True):
+                resolved = resolve_env_file()
+
+            self.assertEqual(resolved, str(repo_env))
+
+    def test_resolve_env_file_honors_override(self):
+        with patch.dict(os.environ, {"GRAPHGEN_ENV_FILE": "/tmp/custom.env"}, clear=True):
+            self.assertEqual(resolve_env_file(), "/tmp/custom.env")
 
 
 class ExtractionRegressionTests(unittest.IsolatedAsyncioTestCase):

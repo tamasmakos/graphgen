@@ -10,6 +10,7 @@ dist/
 .geminiignore
 .gemini
 output
+output_*
 .env
 graphgen.egg-info
 tests

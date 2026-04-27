@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -12,13 +14,39 @@ from graphgen.utils.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
-# Load env variables
-load_dotenv()
+
+def resolve_env_file() -> str:
+    """Resolve the project .env file deterministically.
+
+    Preference order:
+    1. GRAPHGEN_ENV_FILE override
+    2. repo-root .env
+    3. package-dir graphgen/.env
+    4. default repo-root .env path (even if absent)
+    """
+    override = os.environ.get("GRAPHGEN_ENV_FILE")
+    if override:
+        return override
+
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = [
+        repo_root / ".env",
+        repo_root / "graphgen" / ".env",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
+
+
+ENV_FILE = resolve_env_file()
+load_dotenv(ENV_FILE)
+
 
 async def run_pipeline() -> None:
     configure_logging()
     try:
-        settings = PipelineSettings.load() # loads from config.yaml and .env
+        settings = PipelineSettings.load(env_file=ENV_FILE) # loads from config.yaml and resolved .env
         configure_logging(debug=settings.debug)
 
         logger.info("Initializing GraphGen Pipeline...")
