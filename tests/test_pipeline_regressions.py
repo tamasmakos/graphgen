@@ -21,7 +21,9 @@ from graphgen.utils.labels import resolve_entity_labels
 from graphgen.pipeline.entity_relation.extractors import (
     DSPyExtractor,
     LangChainExtractor,
-    _is_generic_relation_triplet,
+    _candidate_grounded_in_evidence,
+    _is_grounded_relation_endpoint,
+    _is_ungrounded_relation_triplet,
     get_extractor,
 )
 from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
@@ -135,14 +137,20 @@ class LLMConfigRegressionTests(unittest.TestCase):
 
 
 class DSPyConfigRegressionTests(unittest.TestCase):
-    def test_generic_triplet_filter_flags_placeholder_policy_node(self):
-        self.assertTrue(_is_generic_relation_triplet("POLICY", "HEALTH", ["HEALTH", "CLIMATE", "SECURITY"]))
+    def test_candidate_grounded_in_evidence_matches_exact_phrase_tokens(self):
+        self.assertTrue(_candidate_grounded_in_evidence("policy changes", "responding to policy changes in health"))
 
-    def test_generic_triplet_filter_keeps_grounded_policy_instrument_entities(self):
-        self.assertFalse(_is_generic_relation_triplet("ENERGY_DEPENDENCE", "KREMLIN", ["ENERGY_DEPENDENCE", "KREMLIN"]))
+    def test_grounded_relation_endpoint_accepts_entity_hint(self):
+        self.assertTrue(_is_grounded_relation_endpoint("ENERGY_DEPENDENCE", ["ENERGY_DEPENDENCE", "KREMLIN"], ["POLICY_INSTRUMENT"], "energy dependence on the Kremlin"))
 
-    def test_generic_triplet_filter_flags_placeholder_policy_instrument_node(self):
-        self.assertTrue(_is_generic_relation_triplet("POLICY_INSTRUMENT", "HEALTH", ["HEALTH", "CLIMATE", "SECURITY"]))
+    def test_grounded_relation_endpoint_rejects_pure_ontology_class_without_hint(self):
+        self.assertFalse(_is_grounded_relation_endpoint("POLICY_INSTRUMENT", ["HEALTH", "CLIMATE", "SECURITY"], ["POLICY_INSTRUMENT"], "policy changes in health, climate, security"))
+
+    def test_ungrounded_relation_triplet_flags_placeholder_class_triplet(self):
+        self.assertTrue(_is_ungrounded_relation_triplet("POLICY_INSTRUMENT", "HEALTH", ["HEALTH", "CLIMATE", "SECURITY"], ["POLICY_INSTRUMENT"], "policy changes in health, climate, security"))
+
+    def test_ungrounded_relation_triplet_keeps_grounded_entity_pair(self):
+        self.assertFalse(_is_ungrounded_relation_triplet("ENERGY_DEPENDENCE", "KREMLIN", ["ENERGY_DEPENDENCE", "KREMLIN"], ["POLICY_INSTRUMENT", "ORGANIZATION"], "energy dependence on the Kremlin"))
 
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.configure")
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.LM")

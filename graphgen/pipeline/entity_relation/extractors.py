@@ -27,35 +27,54 @@ from graphgen.utils.utils import standardize_label
 
 logger = logging.getLogger(__name__)
 
-GENERIC_RELATION_ENTITY_IDS = {
-    "POLICY",
-    "POLICY_CHANGES",
-    "POLICY_INSTRUMENT",
-    "ORGANIZATION",
-    "LOCATION",
-    "EVENT",
-    "CONCEPT",
-    "PERSON",
-    "ENTITY",
-    "STATE",
-    "THING",
-}
-
 
 def _normalize_relation_candidate(value: Any) -> str:
     return standardize_label(value) if value else ""
 
 
-def _is_generic_relation_triplet(source: str, target: str, entity_hints: List[str]) -> bool:
-    hint_set = {_normalize_relation_candidate(item) for item in (entity_hints or []) if item}
-    source_norm = _normalize_relation_candidate(source)
-    target_norm = _normalize_relation_candidate(target)
+def _candidate_grounded_in_evidence(candidate: str, evidence: str) -> bool:
+    candidate_norm = _normalize_relation_candidate(candidate)
+    evidence_norm = _normalize_relation_candidate(evidence)
+    if not candidate_norm or not evidence_norm:
+        return False
+    return f"_{candidate_norm}_" in f"_{evidence_norm}_"
 
-    if source_norm in GENERIC_RELATION_ENTITY_IDS and source_norm not in hint_set:
+
+def _is_grounded_relation_endpoint(
+    endpoint: str,
+    entity_hints: List[str],
+    ontology_classes: List[str],
+    evidence: str,
+) -> bool:
+    endpoint_norm = _normalize_relation_candidate(endpoint)
+    if not endpoint_norm:
+        return False
+
+    hint_set = {_normalize_relation_candidate(item) for item in (entity_hints or []) if item}
+    if endpoint_norm in hint_set:
         return True
-    if target_norm in GENERIC_RELATION_ENTITY_IDS and target_norm not in hint_set:
+
+    if _candidate_grounded_in_evidence(endpoint, evidence):
         return True
+
+    ontology_set = {_normalize_relation_candidate(item) for item in (ontology_classes or []) if item}
+    if endpoint_norm in ontology_set:
+        return False
+
     return False
+
+
+def _is_ungrounded_relation_triplet(
+    source: str,
+    target: str,
+    entity_hints: List[str],
+    ontology_classes: List[str],
+    evidence: str,
+) -> bool:
+    return not (
+        _is_grounded_relation_endpoint(source, entity_hints, ontology_classes, evidence)
+        and _is_grounded_relation_endpoint(target, entity_hints, ontology_classes, evidence)
+    )
 
 
 
@@ -325,12 +344,19 @@ class DSPyExtractor(BaseExtractor):
                         evidence = getattr(triplet, 'evidence', "")
                     
                     if source and relation and target:
-                        if _is_generic_relation_triplet(source, target, entity_hints):
+                        if _is_ungrounded_relation_triplet(
+                            source,
+                            target,
+                            entity_hints,
+                            ontology_classes,
+                            evidence,
+                        ):
                             logger.debug(
-                                "Dropping generic DSPy triplet source=%s relation=%s target=%s",
+                                "Dropping ungrounded DSPy triplet source=%s relation=%s target=%s evidence=%s",
                                 source,
                                 relation,
                                 target,
+                                evidence,
                             )
                             continue
                         # Standardize upstream
