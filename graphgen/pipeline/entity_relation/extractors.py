@@ -18,7 +18,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 
 from graphgen.config.llm import _extract_secret
-from graphgen.config.llm import get_langchain_llm
+from graphgen.config.llm import normalize_groq_model
 from graphgen.pipeline.entity_relation.dspy_module import GraphExtractorModule
 import dspy
 import os
@@ -218,7 +218,7 @@ class DSPyExtractor(BaseExtractor):
              if groq_api_key:
                  # Configure for Groq using OpenAI compatibility
                  logger.info(f"Configuring DSPy for Groq with model {model}")
-                 groq_model = model if model.startswith("groq/") else f"groq/{model}"
+                 groq_model = normalize_groq_model(model)
                  lm = dspy.LM(
                      model=groq_model,
                      api_key=groq_api_key,

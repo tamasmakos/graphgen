@@ -48,6 +48,20 @@ class PrototypeCandidateSelectionTests(unittest.TestCase):
         self.assertIn("LOCATION", selected)
         self.assertLess(selected.index("ORGANIZATION"), 2)
 
+    def test_select_candidate_labels_uses_political_hints(self):
+        label_space = {
+            "PERSON": {"aliases": ["person"], "children": ["PERSON"]},
+            "ORGANIZATION": {"aliases": ["organization"], "children": ["ORGANIZATION"]},
+            "LOCATION": {"aliases": ["location"], "children": ["LOCATION"]},
+            "POLICY": {"aliases": ["policy"], "children": ["POLICY"]},
+        }
+        text = "The Kremlin coordinated sanctions and military pressure."
+
+        selected = select_candidate_labels(text, label_space, top_k=3)
+
+        self.assertIn("ORGANIZATION", selected)
+        self.assertIn("POLICY", selected)
+
 
 class PrototypeRefinementTests(unittest.TestCase):
     def test_refine_entities_with_ontology_assigns_child_type(self):
@@ -70,6 +84,21 @@ class PrototypeRefinementTests(unittest.TestCase):
 
         self.assertEqual(refined[0]["ontology_label"], "CITY")
         self.assertEqual(refined[1]["ontology_label"], "COUNTRY")
+
+    def test_refine_entities_with_ontology_uses_political_overrides(self):
+        label_space = {
+            "LOCATION": {"aliases": ["location"], "children": ["LOCATION"], "child_aliases": {"LOCATION": ["location"]}},
+            "POLICY": {"aliases": ["policy"], "children": ["POLICY_INSTRUMENT"], "child_aliases": {"POLICY_INSTRUMENT": ["policy"]}},
+        }
+        entities = [
+            {"text": "Kremlin", "label": "LOCATION", "score": 0.91},
+            {"text": "Sanctions", "label": "POLICY", "score": 0.88},
+        ]
+
+        refined = refine_entities_with_ontology(entities, label_space)
+
+        self.assertEqual(refined[0]["ontology_label"], "ORGANIZATION")
+        self.assertEqual(refined[1]["ontology_label"], "POLICY_INSTRUMENT")
 
 
 class PrototypeExportTests(unittest.TestCase):

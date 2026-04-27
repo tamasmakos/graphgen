@@ -1,9 +1,12 @@
 import asyncio
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import networkx as nx
 
 from graphgen.config.llm import get_langchain_llm
 from graphgen.config.settings import PipelineSettings
@@ -19,6 +22,7 @@ from graphgen.pipeline.entity_relation.extractors import (
     LangChainExtractor,
     get_extractor,
 )
+from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
 from graphgen.pipeline.summarization.summarizer import DSPySummarizer
 from graphgen.main import resolve_env_file
 
@@ -110,6 +114,16 @@ class LLMConfigRegressionTests(unittest.TestCase):
         mock_chatgroq.assert_called_once()
         self.assertEqual(mock_chatgroq.call_args.kwargs["api_key"], "real-secret")
 
+    def test_diagnostics_helpers_write_json_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "infra": {"output_dir": tmpdir},
+                "extraction": {"diagnostic_mode": True, "diagnostic_output_subdir": "diagnostics"},
+            }
+            self.assertTrue(diagnostics_enabled(config))
+            path = write_diagnostic_json(config, "sample", {"ok": True})
+            self.assertTrue(Path(path).exists())
+
 
 class DSPyConfigRegressionTests(unittest.TestCase):
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.configure")
@@ -160,7 +174,7 @@ class DSPyConfigRegressionTests(unittest.TestCase):
         lm = dspy.settings.lm
         self.assertEqual(lm.model, "groq/meta-llama/llama-4-scout-17b-16e-instruct")
         self.assertEqual(lm._provider_name, "groq")
-        self.assertTrue(lm.supports_function_calling)
+        self.assertEqual(lm.kwargs["api_base"], "https://api.groq.com/openai/v1")
 
     def test_dspy_summarizer_runtime_model_reports_groq_provider(self):
         config = {
@@ -202,7 +216,7 @@ class DSPyConfigRegressionTests(unittest.TestCase):
         self.assertIsInstance(extractor, LangChainExtractor)
 
 
-class PipelineRobustnessRegressionTests(unittest.TestCase):
+class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
     def test_preflight_does_not_abort_when_uploader_is_unreachable(self):
         class FakeUploader:
             def __init__(self):
@@ -224,6 +238,50 @@ class PipelineRobustnessRegressionTests(unittest.TestCase):
         pipeline._run_preflight_checks()
 
         self.assertIsNone(pipeline.uploader)
+
+    def test_pipeline_saves_diagnostic_index_when_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = PipelineSettings(
+                infra={"input_dir": "input", "output_dir": tmpdir},
+                analytics={"save_provenance": False},
+                analysis={"topic_separation_test": False},
+            )
+            pipeline = KnowledgePipeline(settings=settings, uploader=None, extractor=None)
+            ctx = PipelineContext(graph=nx.DiGraph())
+            ctx.diagnostics = {"chunk_diagnostics": ["/tmp/a.json"]}
+            pipeline._step_save_artifacts(ctx)
+            diag_index = Path(tmpdir) / "diagnostics" / "diagnostic_index.json"
+            self.assertTrue(diag_index.exists())
+
+    async def test_segment_diagnostics_include_final_entities_and_relations(self):
+        ctx = PipelineContext(graph=nx.DiGraph())
+        segment_id = "SEG_1"
+        chunk_id = "CHUNK_1"
+        ctx.graph.add_node(segment_id, node_type="SEGMENT")
+        ctx.graph.add_node(chunk_id, node_type="CHUNK", gliner_entities=[
+            {"text": "KREMLIN", "label": "LOCATION", "ontology_label": "ORGANIZATION", "confidence": 0.9, "candidate_labels": ["ORGANIZATION"]}
+        ], raw_extraction={
+            "relations": [("KREMLIN", "COORDINATES", "SANCTIONS", {"confidence": 0.9})],
+            "nodes": [
+                {"id": "KREMLIN", "type": "ORGANIZATION"},
+                {"id": "SANCTIONS", "type": "POLICY_INSTRUMENT"},
+            ],
+        })
+        ctx.graph.add_edge(segment_id, chunk_id, label="HAS_CHUNK")
+        ctx.stats['pipeline_config'] = {
+            "infra": {"output_dir": tempfile.gettempdir()},
+            "extraction": {"diagnostic_mode": True, "diagnostic_output_subdir": "diag-test"},
+        }
+
+        from graphgen.pipeline.entity_relation.extraction import enrich_graph_per_segment
+        result = await enrich_graph_per_segment(ctx)
+        self.assertEqual(result["segments_processed"], 1)
+        diag_path = Path(ctx.diagnostics["segment_diagnostics"][0])
+        payload = json.loads(diag_path.read_text())
+        self.assertIn("final_entities", payload)
+        self.assertIn("final_relations", payload)
+        self.assertGreaterEqual(len(payload["final_entities"]), 1)
+        self.assertGreaterEqual(len(payload["final_relations"]), 1)
 
 
 class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):

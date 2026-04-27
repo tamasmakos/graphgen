@@ -156,6 +156,10 @@ class ExtractionSettings(BaseSettings):
     # Performance
     max_concurrent_chunks: int = 8
 
+    # Diagnostics
+    diagnostic_mode: bool = False
+    diagnostic_output_subdir: str = "diagnostics"
+
     # File Selection (for incremental/selective processing)
     file_pattern: str = Field("*.txt", alias="EXTRACTION_FILE_PATTERN")
 

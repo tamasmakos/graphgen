@@ -88,6 +88,7 @@ class KnowledgePipeline:
         # Convert settings to dict for legacy functions
         # TODO: Refactor downstream functions to accept PipelineSettings object directly
         config_dict = self.settings.model_dump() if hasattr(self.settings, 'model_dump') else self.settings.dict()
+        ctx.stats['pipeline_config'] = config_dict
         
         try:
             # 1. Build Lexical Graph
@@ -355,6 +356,14 @@ class KnowledgePipeline:
             with open(er_report_path, 'w') as f:
                 json.dump(er_stats, f, indent=2)
             logger.info(f"Entity Resolution Report saved to {er_report_path}")
+
+            if ctx.diagnostics:
+                diagnostics_dir = os.path.join(output_dir, "diagnostics")
+                create_output_directory(diagnostics_dir)
+                diagnostics_path = os.path.join(diagnostics_dir, "diagnostic_index.json")
+                with open(diagnostics_path, 'w') as f:
+                    json.dump(ctx.diagnostics, f, indent=2)
+                logger.info(f"Diagnostic index saved to {diagnostics_path}")
         except Exception as e:
             logger.error(f"Failed to save artifacts: {e}")
             ctx.add_error("artifacts", str(e))

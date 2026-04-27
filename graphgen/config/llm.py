@@ -74,6 +74,22 @@ def get_temperature(config: Dict[str, Any]) -> float:
     return float(llm_cfg.get('temperature', 0.0))
 
 
+def normalize_groq_model(model: str | None) -> str:
+    """Normalize Groq model identifiers to exactly one groq/ prefix.
+
+    Groq model IDs may legitimately include vendor namespaces like
+    meta-llama/llama-4-scout-17b-16e-instruct, so we must preserve the
+    model identifier and only add/remove the groq/ provider prefix.
+    """
+    if not model:
+        return "groq/llama-3.1-8b-instant"
+
+    clean_model = str(model)
+    if clean_model.startswith("groq/"):
+        clean_model = clean_model[len("groq/"):]
+    return f"groq/{clean_model}"
+
+
 def get_langchain_llm(config: Dict[str, Any], purpose: str = None) -> ChatGroq:
     """
     Get LangChain-compatible Groq LLM for use with LangChain tools.

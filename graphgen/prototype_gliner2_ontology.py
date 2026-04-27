@@ -16,10 +16,24 @@ DEFAULT_GROUP_RULES = {
 
 TOP_LEVEL_ALIASES = {
     "PERSON": ["person", "president", "commissioner", "leader", "prime minister", "speaker"],
-    "ORGANIZATION": ["organization", "commission", "parliament", "council", "party", "agency", "bank"],
-    "LOCATION": ["location", "country", "city", "region", "brussels", "france", "germany", "ukraine"],
-    "POLICY": ["policy", "regulation", "law", "directive", "framework", "migration", "climate", "sanctions"],
+    "ORGANIZATION": ["organization", "commission", "parliament", "council", "party", "agency", "bank", "kremlin", "army", "military", "union"],
+    "LOCATION": ["location", "country", "city", "region", "brussels", "france", "germany", "ukraine", "mediterranean", "europe"],
+    "POLICY": ["policy", "regulation", "law", "directive", "framework", "migration", "climate", "sanctions", "aid", "health", "security", "energy", "defence", "defense"],
     "EVENT": ["event", "summit", "meeting", "election", "crisis", "war", "debate", "conference"],
+}
+
+POLITICAL_TYPE_OVERRIDES = {
+    "KREMLIN": "ORGANIZATION",
+    "RUSSIAN_ARMY": "ORGANIZATION",
+    "SANCTIONS": "POLICY_INSTRUMENT",
+    "AID": "POLICY_INSTRUMENT",
+    "ENERGY_DEPENDENCE": "POLICY_INSTRUMENT",
+    "SECURITY_AND_DEFENCE_UNION": "POLICY_INSTRUMENT",
+    "MIGRATION": "POLICY_INSTRUMENT",
+    "CLIMATE": "POLICY_INSTRUMENT",
+    "HEALTH": "POLICY_INSTRUMENT",
+    "SECURITY": "POLICY_INSTRUMENT",
+    "POLICY_CHANGES": "POLICY_INSTRUMENT",
 }
 
 
@@ -71,6 +85,13 @@ def build_gliner2_schema(
 def select_candidate_labels(text: str, label_space: Dict[str, Dict[str, Any]], top_k: int = 5) -> List[str]:
     lowered = text.lower()
     scores = []
+    political_hints = {
+        "PERSON": ["prime minister", "president", "speaker", "leader", "mario draghi", "roberta metsola"],
+        "ORGANIZATION": ["kremlin", "army", "military", "parliament", "commission", "bank", "union"],
+        "LOCATION": ["ukraine", "italy", "mediterranean", "europe", "eurozone"],
+        "POLICY": ["sanctions", "aid", "migration", "climate", "health", "security", "energy", "policy"],
+        "EVENT": ["invasion", "conference", "debate", "crisis", "war"],
+    }
     for top_label, spec in label_space.items():
         score = 0
         for alias in spec.get("aliases", []):
@@ -80,6 +101,9 @@ def select_candidate_labels(text: str, label_space: Dict[str, Dict[str, Any]], t
             child_tokens = child.lower().replace("_", " ").split()
             if any(token in lowered for token in child_tokens if len(token) > 3):
                 score += 1
+        for hint in political_hints.get(top_label, []):
+            if hint in lowered:
+                score += 4
         scores.append((top_label, score))
 
     ranked = sorted(scores, key=lambda item: (-item[1], item[0]))
@@ -95,11 +119,12 @@ def refine_entities_with_ontology(entities: List[Dict[str, Any]], label_space: D
         item = dict(entity)
         top_label = standardize_label(item.get("label", ""))
         text = item.get("text", "")
+        text_norm = standardize_label(text)
         text_lower = text.lower()
-        ontology_label = top_label
+        ontology_label = POLITICAL_TYPE_OVERRIDES.get(text_norm, top_label)
 
         spec = label_space.get(top_label)
-        if spec:
+        if spec and text_norm not in POLITICAL_TYPE_OVERRIDES:
             best_child = top_label
             best_score = -1
             for child in spec.get("children", []):
