@@ -10,9 +10,10 @@ The Knowledge Graph follows a strict hierarchy:
 - **ENTITY**: Extracted named entity.
 - **TOPIC**: Hierarchical topic cluster.
 
-## Iterative Experimentation
-The pipeline supports iterative processing of segments to simulate graph growth. 
-This mode includes automatic upload of the final cumulative graph to the configured database (Neo4j/FalkorDB).
+## Experimental / Thesis Workflows
+The default `graphgen` runtime executes a single-run `KnowledgePipeline` over the configured input set.
+
+The repository also retains experimental thesis utilities for iteration-based graph-growth analysis and related visualizations, but those are not the main execution path. Database upload remains part of the standard pipeline when a graph backend is configured and reachable.
 
 This python package provides a highly flexible pipeline for generating Knowledge Graphs from raw text data. It is designed to be modular, decoupling the lexical graph construction from semantic entity extraction.
 
@@ -31,6 +32,8 @@ You can run the pipeline directly via the command line interface:
 ```bash
 graphgen
 ```
+
+This command runs the standard non-iterative `KnowledgePipeline` defined in `graphgen.main` and `graphgen.orchestrator`.
 
 ## Logging & Verbosity
 
@@ -255,7 +258,7 @@ If you see "ERROR: CUDA is not available", double-check your host's NVIDIA drive
 ## Visualization Tools
 
 ### Evolution of Modularity vs Topic Overlap
-To analyze how community structure (Modularity) and semantic topic distinctness (Topic Overlap) evolve over iterations, use the provided visualization script:
+For thesis or experimental runs that intentionally produce `iterative_experiment_results.csv`, use the provided visualization script to analyze how community structure (Modularity) and semantic topic distinctness (Topic Overlap) change across iterations:
 
 ```bash
 python3 tools/visualize_evolution.py --csv output/iterative_experiment_results.csv --output output/modularity_vs_overlap.png

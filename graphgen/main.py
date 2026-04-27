@@ -67,15 +67,11 @@ async def run_pipeline() -> None:
         from graphgen.pipeline.entity_relation.extractors import get_extractor
         extractor = get_extractor(settings.model_dump())
         
-        # Check for Iterative Mode
-        if settings.iterative.enabled:
-            from graphgen.pipeline.iterative_orchestrator import IterativeOrchestrator
-            logger.info("Starting Iterative Pipeline Orchestrator...")
-            pipeline = IterativeOrchestrator(settings, uploader, extractor)
-        else:
-            # Initialize the standard pipeline
-            pipeline = KnowledgePipeline(settings, uploader, extractor)
-        
+        # Active runtime always uses the single-run knowledge pipeline.
+        # Iterative experimentation, if retained in the repo for historical or
+        # auxiliary use, is no longer part of the main execution path.
+        pipeline = KnowledgePipeline(settings, uploader, extractor)
+
         # Run
         await pipeline.run()
         

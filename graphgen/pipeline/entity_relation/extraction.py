@@ -549,13 +549,17 @@ async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str
 
     # Preload NER model to prevent race conditions in parallel threads
     extraction_backend = extraction_cfg.get('ner_backend') or extraction_cfg.get('backend', 'gliner')
-    if extraction_backend == 'spacy':
-        spacy_model_name = extraction_cfg.get('spacy_model', 'en_core_web_lg')
-        get_spacy_model(spacy_model_name)
-    elif extraction_backend == 'gliner2':
-        get_gliner2_model(config)
+    gliner_preload = extraction_cfg.get('gliner_preload', True)
+    if gliner_preload:
+        if extraction_backend == 'spacy':
+            spacy_model_name = extraction_cfg.get('spacy_model', 'en_core_web_lg')
+            get_spacy_model(spacy_model_name)
+        elif extraction_backend == 'gliner2':
+            get_gliner2_model(config)
+        else:
+            get_gliner_model(config)
     else:
-        get_gliner_model(config)
+        logger.info("Skipping eager GLiNER/NER preload because extraction.gliner_preload is false.")
 
     try:
         # Use max_concurrent from config for controlled parallelization

@@ -1,13 +1,14 @@
 # GraphGen: Knowledge Graph Generation Pipeline
 
-GraphGen transforms raw documents into a structured knowledge graph with optional analytics and Neo4j upload.
+GraphGen transforms raw documents into a structured knowledge graph through a single-run `KnowledgePipeline`, with optional analytics and Neo4j upload. Experimental iteration-based analysis remains available for thesis workflows, but it is separate from the default execution path.
 
 ## Key Architectural Features
 
 - **Dependency Injection**: The `KnowledgePipeline` orchestrator accepts uploader and extractor dependencies via its constructor.
 - **Config-driven**: Loads `config.yaml` + `.env` via `pydantic-settings` for consistent overrides.
 - **Modular Pipeline**: Each major step lives under `graphgen/pipeline/` for testable, isolated logic.
-- **Iterative Mode**: Optional batch-based experimentation for incremental graph evolution.
+- **Standard Runtime**: `graphgen.main` runs the single-pass `KnowledgePipeline` orchestrator.
+- **Experimental Utilities**: The repository also includes thesis-oriented iteration-based analysis tooling, but it is not the default runtime path.
 
 ## Module Structure
 

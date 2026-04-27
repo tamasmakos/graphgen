@@ -11,6 +11,7 @@ dist/
 .gemini
 output
 output_*
+preflight_probe_*
 .env
 graphgen.egg-info
 tests
