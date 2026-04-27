@@ -25,6 +25,7 @@ Completed local runs produced the following progression:
 - **128 chunks** -> 1155 nodes / 3239 edges / 14 topics / 72 subtopics
 - **160 chunks** -> 1377 nodes / 3946 edges / 14 topics / 80 subtopics
 - **187 chunks** -> 1617 nodes / 4670 edges / 17 topics / 91 subtopics
+- **224 chunks** -> 1916 nodes / 5550 edges / 18 topics / 104 subtopics
 
 ### Interpretation
 These runs validate operational scalability of the non-iterative pipeline on modest local hardware. They show stable graph growth, successful hierarchical summarization, and the continued production of thesis-facing artifacts such as GraphML, entity-resolution reports, provenance manifests, and topic-separation reports.

@@ -10,7 +10,7 @@ The methodology is applied to the verbatim reports of the 'This is Europe' Europ
 
 Recognizing that discourse topics exist at multiple granularities—a limitation noted in Section 1.1—the Leiden algorithm is applied hierarchically, first identifying broad thematic clusters (macro-topics) and then detecting sub-communities within each (sub-topics). Each resulting community is then processed through an LLM-based summarization pipeline that generates interpretable labels and descriptive reports from graph structure and supporting textual evidence.
 
-The strongest empirical result of the current validation phase is operational rather than inferential. On resource-constrained local hardware, the non-iterative pipeline scaled from 48 to 187 lexical chunks while producing steadily larger graphs: from 531 nodes / 1341 edges to 1617 nodes / 4670 edges. Across the same runs, the system produced between 49 and 108 topic-like community nodes (topics plus subtopics), indicating that the architecture can generate hierarchical thematic structure under realistic local constraints. Topic-separation reports were successfully produced, but they consistently indicated insufficient data for strong statistical interpretation. Accordingly, the present evidence supports structural feasibility and pipeline scalability more strongly than definitive claims about semantic separability.
+The strongest empirical result of the current validation phase is operational rather than inferential. On resource-constrained local hardware, the non-iterative pipeline scaled from 48 to 224 lexical chunks while producing steadily larger graphs: from 531 nodes / 1341 edges to 1916 nodes / 5550 edges. Across the same runs, the system produced between 49 and 122 topic-like community nodes (topics plus subtopics), indicating that the architecture can generate hierarchical thematic structure under realistic local constraints. Topic-separation reports were successfully produced, but they consistently indicated insufficient data for strong statistical interpretation. Accordingly, the present evidence supports structural feasibility and pipeline scalability more strongly than definitive claims about semantic separability.
 
 The thesis concludes that defining topics as structurally coherent communities within a knowledge graph represents a viable complementary approach to probabilistic methods. This exploration offers an alternative perspective on topic modeling—one that prioritizes interpretability and explicit structure—while acknowledging that graph-based methods are not necessarily superior to simpler approaches (Galke & Scherp, 2022).
 
@@ -202,17 +202,35 @@ The current validation phase focuses on a non-iterative local pipeline rather th
 
 #### 4.1.1 Structural growth under chunk scaling
 
-Across the completed local probes, graph size increases consistently as chunk count is raised. A 48-chunk run produced a graph with **531 nodes** and **1341 edges**; a 64-chunk run produced **661 nodes** and **1733 edges**; a 96-chunk run produced **923 nodes** and **2529 edges**; a 128-chunk run produced **1155 nodes** and **3239 edges**; a 160-chunk run produced **1377 nodes** and **3946 edges**; and a 187-chunk run produced **1617 nodes** and **4670 edges**. This monotonic growth is an important engineering validation because it suggests that the extraction and graph-assembly stages continue to add usable structure without obvious collapse, runaway sparsification, or instability on the available local hardware.
+Across the completed local probes, graph size increases consistently as chunk count is raised. A 48-chunk run produced a graph with **531 nodes** and **1341 edges**; a 64-chunk run produced **661 nodes** and **1733 edges**; a 96-chunk run produced **923 nodes** and **2529 edges**; a 128-chunk run produced **1155 nodes** and **3239 edges**; a 160-chunk run produced **1377 nodes** and **3946 edges**; a 187-chunk run produced **1617 nodes** and **4670 edges**; and a 224-chunk run produced **1916 nodes** and **5550 edges**. This monotonic growth is an important engineering validation because it suggests that the extraction and graph-assembly stages continue to add usable structure without obvious collapse, runaway sparsification, or instability on the available local hardware.
 
-The extraction statistics show a similar progression. The same sequence of runs yielded **293**, **380**, **549**, **767**, **856**, and **1072** extracted entities, alongside **145**, **208**, **321**, **411**, **463**, and **547** extracted relations. These counts indicate that larger chunk budgets do not merely inflate the lexical scaffold; they also translate into additional semantic content in the assembled graph.
+The extraction statistics show a similar progression. The same sequence of runs yielded **293**, **380**, **549**, **767**, **856**, **1072**, and **1246** extracted entities, alongside **145**, **208**, **321**, **411**, **463**, **547**, and **637** extracted relations. These counts indicate that larger chunk budgets do not merely inflate the lexical scaffold; they also translate into additional semantic content in the assembled graph.
+
+Table 4.1 summarizes the validated local scaling ladder.
+
+| Run | Chunks | Entities | Relations | Nodes | Edges | Topics | Subtopics | Modularity | Topic analysis |
+| :-- | -----: | -------: | --------: | ----: | ----: | -----: | --------: | ---------: | :------------- |
+| v2 | 48 | 293 | 145 | 531 | 1341 | 10 | 39 | 0.6312 | Insufficient data for analysis |
+| scale1 | 64 | 380 | 208 | 661 | 1733 | 14 | 47 | 0.6748 | Insufficient data for analysis |
+| scale2 | 96 | 549 | 321 | 923 | 2529 | 16 | 66 | 0.7108 | Insufficient data for analysis |
+| scale3 | 128 | 767 | 411 | 1155 | 3239 | 14 | 72 | 0.6567 | Insufficient data for analysis |
+| scale4 | 160 | 856 | 463 | 1377 | 3946 | 14 | 80 | 0.6593 | Insufficient data for analysis |
+| scale5 | 187 | 1072 | 547 | 1617 | 4670 | 17 | 91 | 0.6526 | Insufficient data for analysis |
+| scale6 | 224 | 1246 | 637 | 1916 | 5550 | 18 | 104 | 0.6711 | Insufficient data for analysis |
 
 #### 4.1.2 Growth of hierarchical community structure
 
-The number of generated community summaries also rises across these probes. The completed runs produced **10 topics / 39 subtopics** at 48 chunks, **14 / 47** at 64 chunks, **16 / 66** at 96 chunks, **14 / 72** at 128 chunks, **14 / 80** at 160 chunks, and **17 / 91** at 187 chunks. Expressed as total topic-like units, this corresponds to **49**, **61**, **82**, **86**, **94**, and **108** topic-like nodes respectively.
+The number of generated community summaries also rises across these probes. The completed runs produced **10 topics / 39 subtopics** at 48 chunks, **14 / 47** at 64 chunks, **16 / 66** at 96 chunks, **14 / 72** at 128 chunks, **14 / 80** at 160 chunks, **17 / 91** at 187 chunks, and **18 / 104** at 224 chunks. Expressed as total topic-like units, this corresponds to **49**, **61**, **82**, **86**, **94**, **108**, and **122** topic-like nodes respectively.
 
 This pattern does not in itself prove semantic distinctiveness, but it does show that the non-iterative pipeline continues to materialize a usable hierarchical thematic representation as the local sample grows. In practical terms, the summarization stage is not merely surviving larger runs; it is producing increasingly rich topic and subtopic inventories that can be inspected qualitatively.
 
-#### 4.1.3 Current limits of semantic evaluation
+#### 4.1.3 Stability of community quality metrics
+
+The modularity values remain within a relatively narrow and consistently positive range, from **0.6312** to **0.7108** across the validated runs. This suggests that larger local runs do not destroy the structural coherence of the detected communities even as the graph expands substantially. At the same time, the local manifests report **modularity deltas of 0.0** between the weighted and baseline variants, meaning that in the current capped local experiments Node2Vec is best interpreted as a stable architectural component rather than as a newly re-demonstrated source of modularity gains.
+
+This is an important result for thesis interpretation. The current evidence supports structural robustness under scaling, but it does not justify a stronger claim that local scale-up alone improves community quality. In other words, the graph becomes larger and richer while community quality remains broadly stable rather than dramatically better.
+
+#### 4.1.4 Current limits of semantic evaluation
 
 The present local outputs do not yet support strong claims about semantic separation between the detected communities. In all completed runs inspected here, the automatically generated topic-separation reports return the judgment **"Insufficient data for analysis"**, with global separation and overlap both reported as **0.0**. This should not be interpreted as a pipeline failure. Rather, it indicates that the reporting and analytics stages are functioning, but that the current local validation regime does not yet provide a sufficiently informative basis for robust inferential claims about semantic topic separation.
 
@@ -240,9 +258,9 @@ The central theoretical contribution is a reformulation of "topic" from a probab
 
 The methodology developed for this thesis integrates several components into a unified pipeline: ontology-guided schema construction, GLiNER2-based entity detection, DSPy-based relation extraction, community detection via the Leiden algorithm, Node2Vec-informed structural weighting, and hierarchical summarization that leverages the extracted graph structure. Empirical evaluation on the "This is Europe" debate corpus (2022–2024) yielded several cautious findings.
 
-First, the extracted knowledge graphs exhibit sustained structural growth under increasing local chunk budgets. In the validated non-iterative runs, graph size increased from **531 nodes / 1341 edges** at 48 chunks to **1617 nodes / 4670 edges** at 187 chunks. This behaviour suggests that the pipeline can continue to add entities, relations, and communities without obvious instability on modest local hardware.
+First, the extracted knowledge graphs exhibit sustained structural growth under increasing local chunk budgets. In the validated non-iterative runs, graph size increased from **531 nodes / 1341 edges** at 48 chunks to **1916 nodes / 5550 edges** at 224 chunks. This behaviour suggests that the pipeline can continue to add entities, relations, and communities without obvious instability on modest local hardware.
 
-Second, community detection produced consistently interpretable hierarchical outputs. Across the same runs, the summarization stage generated between **10 and 17 topics** and between **39 and 91 subtopics**, indicating that the graph structure can support multi-level thematic abstraction as the corpus sample grows.
+Second, community detection produced consistently interpretable hierarchical outputs. Across the same runs, the summarization stage generated between **10 and 18 topics** and between **39 and 104 subtopics**, indicating that the graph structure can support multi-level thematic abstraction as the corpus sample grows.
 
 Third, the study supports a modest practical claim about feasibility and interpretability rather than a strong inferential claim about topic separation. The pipeline now produces graph artifacts, community summaries, and topic-separation reports reliably in a non-iterative setting. However, the available topic-separation reports remain statistically inconclusive, repeatedly indicating insufficient data for robust semantic interpretation.
 
