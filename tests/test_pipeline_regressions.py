@@ -23,6 +23,7 @@ from graphgen.pipeline.entity_relation.extractors import (
     DSPyExtractor,
     LangChainExtractor,
     _candidate_grounded_in_evidence,
+    _endpoint_matches_hint,
     _is_grounded_relation_endpoint,
     _is_ungrounded_relation_triplet,
     _relation_endpoints_in_hints,
@@ -141,6 +142,11 @@ class LLMConfigRegressionTests(unittest.TestCase):
 class DSPyConfigRegressionTests(unittest.TestCase):
     def test_candidate_grounded_in_evidence_matches_exact_phrase_tokens(self):
         self.assertTrue(_candidate_grounded_in_evidence("policy changes", "responding to policy changes in health"))
+
+    def test_endpoint_matches_hint_allows_hint_substrings_for_compound_endpoints(self):
+        self.assertTrue(_endpoint_matches_hint("PRIME_MINISTER_OF_ITALY", ["ITALY", "MARIO_DRAGHI"]))
+        self.assertTrue(_endpoint_matches_hint("PRESIDENT_OF_THE_EUROPEAN_CENTRAL_BANK", ["EUROPEAN_CENTRAL_BANK"]))
+        self.assertFalse(_endpoint_matches_hint("COUNTRY", ["ITALY", "MARIO_DRAGHI"]))
 
     def test_grounded_relation_endpoint_accepts_entity_hint(self):
         self.assertTrue(_is_grounded_relation_endpoint("ENERGY_DEPENDENCE", ["ENERGY_DEPENDENCE", "KREMLIN"], ["POLICY_INSTRUMENT"], "energy dependence on the Kremlin"))

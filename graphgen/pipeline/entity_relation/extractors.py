@@ -40,6 +40,29 @@ def _candidate_grounded_in_evidence(candidate: str, evidence: str) -> bool:
     return f"_{candidate_norm}_" in f"_{evidence_norm}_"
 
 
+def _endpoint_matches_hint(endpoint: str, entity_hints: List[str]) -> bool:
+    endpoint_norm = _normalize_relation_candidate(endpoint)
+    if not endpoint_norm:
+        return False
+
+    endpoint_tokens = {token for token in endpoint_norm.split('_') if len(token) > 2}
+    for hint in entity_hints or []:
+        hint_norm = _normalize_relation_candidate(hint)
+        if not hint_norm:
+            continue
+        if endpoint_norm == hint_norm:
+            return True
+        if hint_norm in endpoint_norm or endpoint_norm in hint_norm:
+            return True
+
+        hint_tokens = {token for token in hint_norm.split('_') if len(token) > 2}
+        overlap = endpoint_tokens & hint_tokens
+        if overlap and (len(overlap) >= 2 or len(endpoint_tokens) == 1 or len(hint_tokens) == 1):
+            return True
+
+    return False
+
+
 def _is_grounded_relation_endpoint(
     endpoint: str,
     entity_hints: List[str],
@@ -50,8 +73,7 @@ def _is_grounded_relation_endpoint(
     if not endpoint_norm:
         return False
 
-    hint_set = {_normalize_relation_candidate(item) for item in (entity_hints or []) if item}
-    if endpoint_norm in hint_set:
+    if _endpoint_matches_hint(endpoint, entity_hints):
         return True
 
     if _candidate_grounded_in_evidence(endpoint, evidence):
@@ -78,8 +100,7 @@ def _is_ungrounded_relation_triplet(
 
 
 def _relation_endpoints_in_hints(source: str, target: str, entity_hints: List[str]) -> bool:
-    hint_set = {_normalize_relation_candidate(item) for item in (entity_hints or []) if item}
-    return _normalize_relation_candidate(source) in hint_set and _normalize_relation_candidate(target) in hint_set
+    return _endpoint_matches_hint(source, entity_hints) and _endpoint_matches_hint(target, entity_hints)
 
 
 DEFAULT_EXTRACTION_PROMPT = ChatPromptTemplate.from_template(
