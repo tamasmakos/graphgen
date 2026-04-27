@@ -17,6 +17,7 @@ from graphgen.pipeline.entity_relation.extractors import (
     LangChainExtractor,
     get_extractor,
 )
+from graphgen.pipeline.summarization.summarizer import DSPySummarizer
 
 
 class ExtractionRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -120,6 +121,34 @@ class DSPyConfigRegressionTests(unittest.TestCase):
         self.assertEqual(kwargs["api_base"], "https://api.groq.com/openai/v1")
         self.assertEqual(kwargs["api_key"], "real-secret")
         mock_configure.assert_called_once()
+
+    def test_dspy_extractor_runtime_model_reports_groq_provider(self):
+        config = {
+            "llm": {"extraction_model": "meta-llama/llama-4-scout-17b-16e-instruct"},
+            "infra": {"groq_api_key": "fake-key"},
+        }
+
+        DSPyExtractor(config)
+
+        import dspy
+        lm = dspy.settings.lm
+        self.assertEqual(lm.model, "groq/meta-llama/llama-4-scout-17b-16e-instruct")
+        self.assertEqual(lm._provider_name, "groq")
+        self.assertTrue(lm.supports_function_calling)
+
+    def test_dspy_summarizer_runtime_model_reports_groq_provider(self):
+        config = {
+            "llm": {"summarization_model": "llama-3.1-8b-instant"},
+            "infra": {"groq_api_key": "fake-key"},
+        }
+
+        DSPySummarizer(config)
+
+        import dspy
+        lm = dspy.settings.lm
+        self.assertEqual(lm.model, "groq/llama-3.1-8b-instant")
+        self.assertEqual(lm._provider_name, "groq")
+        self.assertTrue(lm.supports_function_calling)
 
     def test_get_extractor_uses_dspy_for_gliner2_ner_backend(self):
         extractor = get_extractor({"extraction": {"backend": "gliner2"}})
