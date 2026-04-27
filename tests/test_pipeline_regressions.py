@@ -4,15 +4,17 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import networkx as nx
 
 from graphgen.config.llm import get_langchain_llm
 from graphgen.config.settings import PipelineSettings
 from graphgen.config.settings import ExtractionSettings
+from graphgen.config.schema import GraphSchema, NodeSchema
 from graphgen.data_types import ChunkExtractionTask, PipelineContext
 from graphgen.orchestrator import KnowledgePipeline
+from graphgen.pipeline.lexical_graph_building.builder import build_lexical_graph
 from graphgen.pipeline.entity_relation.extraction import (
     _extract_entities_for_chunk,
     _build_relation_eligible_entities,
@@ -32,6 +34,8 @@ from graphgen.pipeline.entity_relation.extractors import (
 )
 from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
 from graphgen.pipeline.summarization.summarizer import DSPySummarizer
+from graphgen.pipeline.summarization.core import _parse_summary_response
+from graphgen.pipeline.summarization.models import SummarizationTask
 from graphgen.main import resolve_env_file
 
 
@@ -56,6 +60,82 @@ class MainEnvResolutionRegressionTests(unittest.TestCase):
     def test_resolve_env_file_honors_override(self):
         with patch.dict(os.environ, {"GRAPHGEN_ENV_FILE": "/tmp/custom.env"}, clear=True):
             self.assertEqual(resolve_env_file(), "/tmp/custom.env")
+
+    @patch("graphgen.utils.graphdb.neo4j_adapter.Neo4jGraphUploader")
+    @patch("graphgen.pipeline.entity_relation.extractors.get_extractor")
+    @patch("graphgen.main.KnowledgePipeline")
+    @patch("graphgen.main.configure_logging")
+    def test_run_pipeline_uses_knowledge_pipeline_even_when_iterative_flag_is_true(
+        self,
+        mock_configure_logging,
+        mock_knowledge_pipeline,
+        mock_get_extractor,
+        mock_uploader,
+    ):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+        from graphgen.main import run_pipeline
+
+        mock_pipeline_instance = MagicMock()
+        mock_pipeline_instance.run = AsyncMock()
+        mock_knowledge_pipeline.return_value = mock_pipeline_instance
+        mock_get_extractor.return_value = object()
+
+        settings = SimpleNamespace(
+            debug=False,
+            infra=SimpleNamespace(
+                input_dir="input/txt/translated",
+                output_dir="output",
+                neo4j_host="localhost",
+                neo4j_port=7687,
+                neo4j_user="neo4j",
+                neo4j_password="password",
+            ),
+            iterative=SimpleNamespace(enabled=True),
+            model_dump=lambda: {"extraction": {"backend": "dspy"}},
+        )
+
+        with patch("graphgen.main.PipelineSettings.load", return_value=settings):
+            asyncio.run(run_pipeline())
+
+        mock_knowledge_pipeline.assert_called_once()
+        mock_pipeline_instance.run.assert_awaited_once()
+        mock_configure_logging.assert_called()
+        mock_uploader.assert_called_once()
+        mock_get_extractor.assert_called_once_with(settings.model_dump())
+
+
+class ConfigRegressionTests(unittest.TestCase):
+    def test_repo_config_disables_iterative_runtime_by_default(self):
+        settings = PipelineSettings.load(config_path="/root/graphgen/config.yaml", env_file="/root/graphgen/.env")
+        self.assertFalse(settings.iterative.enabled)
+
+    def test_repo_config_keeps_node2vec_enabled_for_thesis_workflow(self):
+        settings = PipelineSettings.load(config_path="/root/graphgen/config.yaml", env_file="/root/graphgen/.env")
+        self.assertTrue(settings.community.node2vec_enabled)
+
+    def test_analysis_settings_expose_default_topic_separation_output_file(self):
+        settings = PipelineSettings()
+        self.assertEqual(settings.analysis.output_file, "topic_separation_report.json")
+        self.assertEqual(settings.analytics.output_file, "topic_separation_report.json")
+
+    def test_pipeline_settings_sync_analysis_from_analytics_when_only_analytics_is_configured(self):
+        settings = PipelineSettings(analytics={"output_file": "custom_topic_report.json", "topic_separation_test": False})
+        self.assertEqual(settings.analytics.output_file, "custom_topic_report.json")
+        self.assertEqual(settings.analysis.output_file, "custom_topic_report.json")
+        self.assertFalse(settings.analysis.topic_separation_test)
+
+    def test_extraction_settings_support_optional_chunk_budget(self):
+        settings = PipelineSettings(extraction={"max_chunks": 12})
+        self.assertEqual(settings.extraction.max_chunks, 12)
+
+    def test_test_mode_settings_support_optional_chunk_budget(self):
+        settings = PipelineSettings(test_mode={"enabled": True, "max_chunks": 7})
+        self.assertEqual(settings.test_mode.max_chunks, 7)
+
+    def test_extraction_settings_allow_disabling_eager_gliner_preload(self):
+        settings = PipelineSettings(extraction={"gliner_preload": False})
+        self.assertFalse(settings.extraction.gliner_preload)
 
 
 class ExtractionRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -141,6 +221,49 @@ class LLMConfigRegressionTests(unittest.TestCase):
 
 
 class DSPyConfigRegressionTests(unittest.TestCase):
+    def test_summary_parser_repairs_missing_closing_finding_brace(self):
+        content = '''```json
+{
+  "title": "Renew Europe's Commitment to European Values and the Rule of Law",
+  "summary": "This community is centered around Renew Europe's unwavering commitment to upholding European values, particularly the rule of law.",
+  "findings": [
+    {
+      "summary": "Renew Europe's Support for the European Public Prosecutor's Office",
+      "explanation": "Renew Europe strongly supports the European Public Prosecutor's Office."
+    },
+    {
+      "summary": "Collaborative Efforts in Protecting the Rule of Law",
+      "explanation": "The relationships between Renew Europe and other entities highlight their collaborative efforts in protecting and strengthening the rule of law."
+  ]
+}
+```'''
+        data = _parse_summary_response(content)
+        self.assertEqual(data["title"], "Renew Europe's Commitment to European Values and the Rule of Law")
+        self.assertEqual(len(data["findings"]), 2)
+        self.assertEqual(data["findings"][-1]["summary"], "Collaborative Efforts in Protecting the Rule of Law")
+
+    def test_summary_parser_repairs_unescaped_inner_quotes_in_summary_text(self):
+        content = '''```json
+{
+  "title": "European Union's Efforts for Peace and Circular Economy",
+  "summary": "This community revolves around the European Union's efforts to achieve peace, implement the circular economy, and promote solidarity and unity.",
+  "findings": [
+    {
+      "summary": "EU's Efforts for Energy Independence",
+      "explanation": "The European Union's efforts for energy independence are a significant aspect of this community. The EU's engagement in activities related to energy independence, such as working towards a "just transition," highlights its commitment to reducing its reliance on Russian gas and oil."
+    }
+  ]
+}
+```'''
+        data = _parse_summary_response(content)
+        self.assertEqual(data["title"], "European Union's Efforts for Peace and Circular Economy")
+        self.assertEqual(len(data["findings"]), 1)
+        self.assertIn('"just transition,"', data["findings"][0]["explanation"])
+
+    def test_summary_parser_raises_when_no_json_object_can_be_found(self):
+        with self.assertRaises(ValueError):
+            _parse_summary_response("not json at all")
+
     def test_candidate_grounded_in_evidence_matches_exact_phrase_tokens(self):
         self.assertTrue(_candidate_grounded_in_evidence("policy changes", "responding to policy changes in health"))
 
@@ -273,6 +396,142 @@ class DSPyConfigRegressionTests(unittest.TestCase):
         self.assertEqual(len(relations), 1)
         self.assertEqual(len(nodes), 1)
         self.assertEqual(diagnostics, {})
+
+
+class KnowledgePipelineNode2VecRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_step_communities_applies_node2vec_weights_when_enabled(self):
+        settings = PipelineSettings(
+            infra={"input_dir": "input", "output_dir": "output"},
+            analytics={"save_provenance": False},
+            analysis={"topic_separation_test": False},
+            community={"node2vec_enabled": True},
+        )
+        pipeline = KnowledgePipeline(settings=settings, uploader=None, extractor=None)
+        ctx = PipelineContext(graph=nx.DiGraph())
+        ctx.graph.add_node("A", node_type="ENTITY_CONCEPT")
+        ctx.graph.add_node("B", node_type="ENTITY_CONCEPT")
+        ctx.graph.add_edge("A", "B", graph_type="entity_relation", weight=1.0)
+
+        detector_instance = Mock()
+        detector_instance.detect_communities.side_effect = [
+            {"assignments": {"A": 0, "B": 0}, "modularity": 0.41},
+            {"assignments": {"A": 0, "B": 0}, "modularity": 0.57},
+        ]
+        detector_instance.detect_subcommunities_leiden.return_value = {}
+
+        with patch("graphgen.pipeline.community.detection.CommunityDetector", return_value=detector_instance), \
+             patch("graphgen.pipeline.embeddings.node2vec_wrapper.compute_node2vec_weights", return_value={("A", "B"): 0.83}) as mock_weights, \
+             patch("graphgen.pipeline.community.subcommunities.add_enhanced_community_attributes_to_graph"), \
+             patch("graphgen.pipeline.summarization.core.generate_community_summaries", return_value={"topics": 1}) as mock_summaries, \
+             patch("graphgen.config.llm.get_langchain_llm", return_value=object()):
+            await pipeline._step_communities(ctx, settings.model_dump())
+
+        self.assertEqual(ctx.graph["A"]["B"]["weight"], 0.83)
+        self.assertEqual(ctx.stats["communities"]["modularity_baseline"], 0.41)
+        self.assertEqual(ctx.stats["communities"]["modularity"], 0.57)
+        self.assertTrue(ctx.stats["communities"]["node2vec_enabled"])
+        mock_weights.assert_called_once()
+        mock_summaries.assert_awaited_once()
+
+
+class LexicalGraphBudgetRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_build_lexical_graph_respects_chunk_budget(self):
+        ctx = PipelineContext(graph=nx.DiGraph())
+        async def fake_process_single_document_lexical(deps, filename, input_dir, config=None, schema=None):
+            doc_id = f"DOC_{filename}"
+            deps.graph.add_node(doc_id, node_type="DOC", segment_count=2)
+            deps.graph.add_node(f"{doc_id}_S0", node_type="SEGMENT")
+            deps.graph.add_node(f"{doc_id}_S1", node_type="SEGMENT")
+            deps.graph.add_edge(doc_id, f"{doc_id}_S0", label="HAS_SEGMENT")
+            deps.graph.add_edge(doc_id, f"{doc_id}_S1", label="HAS_SEGMENT")
+            for idx in range(3):
+                chunk_id = f"{doc_id}_S0_C{idx}" if idx < 2 else f"{doc_id}_S1_C0"
+                parent = f"{doc_id}_S0" if idx < 2 else f"{doc_id}_S1"
+                deps.graph.add_node(chunk_id, node_type="CHUNK")
+                deps.graph.add_edge(parent, chunk_id, label="HAS_CHUNK")
+                deps.extraction_tasks.append(ChunkExtractionTask(chunk_id=chunk_id, chunk_text="x", entities=[], abstract_concepts=[], keywords=[]))
+            return {"segments_added": 2, "chunks_added": 3, "errors": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "doc1.txt").write_text("a", encoding="utf-8")
+            config = {
+                "extraction": {"file_pattern": "*.txt", "max_chunks": 2},
+                "test_mode": {"enabled": True, "max_documents": 1},
+            }
+            with patch(
+                "graphgen.pipeline.lexical_graph_building.builder.process_single_document_lexical",
+                new=fake_process_single_document_lexical,
+            ):
+                result = await build_lexical_graph(ctx, tmpdir, config)
+
+        self.assertEqual(result["total_chunks"], 2)
+        self.assertEqual(len(ctx.extraction_tasks), 2)
+        chunk_nodes = [n for n, d in ctx.graph.nodes(data=True) if d.get("node_type") == "CHUNK"]
+        self.assertEqual(len(chunk_nodes), 2)
+
+    async def test_build_lexical_graph_respects_chunk_budget_for_custom_chunk_label(self):
+        ctx = PipelineContext(graph=nx.DiGraph())
+        schema = GraphSchema(nodes={
+            "Doc": NodeSchema(label="DOC", source_type="document"),
+            "Segment": NodeSchema(label="SEGMENT", source_type="segment"),
+            "Chunk": NodeSchema(label="ChunkNode", source_type="chunk"),
+        })
+
+        async def fake_process_single_document_lexical(deps, filename, input_dir, config=None, schema=None):
+            doc_id = f"DOC_{filename}"
+            deps.graph.add_node(doc_id, node_type="DOC", segment_count=2)
+            deps.graph.add_node(f"{doc_id}_S0", node_type="SEGMENT")
+            deps.graph.add_node(f"{doc_id}_S1", node_type="SEGMENT")
+            deps.graph.add_edge(doc_id, f"{doc_id}_S0", label="HAS_SEGMENT")
+            deps.graph.add_edge(doc_id, f"{doc_id}_S1", label="HAS_SEGMENT")
+            for idx in range(3):
+                chunk_id = f"{doc_id}_S0_C{idx}" if idx < 2 else f"{doc_id}_S1_C0"
+                parent = f"{doc_id}_S0" if idx < 2 else f"{doc_id}_S1"
+                deps.graph.add_node(chunk_id, node_type="ChunkNode")
+                deps.graph.add_edge(parent, chunk_id, label="HAS_CHUNK")
+                deps.extraction_tasks.append(ChunkExtractionTask(chunk_id=chunk_id, chunk_text="x", entities=[], abstract_concepts=[], keywords=[]))
+            return {"segments_added": 2, "chunks_added": 3, "errors": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "doc1.txt").write_text("a", encoding="utf-8")
+            config = {
+                "extraction": {"file_pattern": "*.txt", "max_chunks": 2},
+                "test_mode": {"enabled": True, "max_documents": 1},
+            }
+            with patch(
+                "graphgen.pipeline.lexical_graph_building.builder.process_single_document_lexical",
+                new=fake_process_single_document_lexical,
+            ):
+                result = await build_lexical_graph(ctx, tmpdir, config, schema=schema)
+
+        self.assertEqual(result["total_chunks"], 2)
+        self.assertEqual(len(ctx.extraction_tasks), 2)
+        chunk_nodes = [n for n, d in ctx.graph.nodes(data=True) if d.get("node_type") == "ChunkNode"]
+        self.assertEqual(len(chunk_nodes), 2)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = PipelineSettings(
+                infra={"input_dir": "input", "output_dir": tmpdir},
+                analytics={"save_provenance": False},
+                analysis={"topic_separation_test": True, "output_file": "topic_separation_report.json"},
+            )
+            pipeline = KnowledgePipeline(settings=settings, uploader=None, extractor=None)
+            ctx = PipelineContext(graph=nx.DiGraph())
+            ctx.graph.add_node("TOPIC_0", node_type="TOPIC", embedding=[1.0, 0.0], title="T0", summary="S0")
+            ctx.graph.add_node("TOPIC_1", node_type="TOPIC", embedding=[0.0, 1.0], title="T1", summary="S1")
+            ctx.graph.add_node("ENTITY_A", node_type="ENTITY_CONCEPT")
+            ctx.graph.add_node("ENTITY_B", node_type="ENTITY_CONCEPT")
+            ctx.graph.add_edge("ENTITY_A", "ENTITY_B", graph_type="entity_relation", weight=1.0)
+            with patch("graphgen.analytics.reporting.generate_topic_separation_report", return_value={
+                "community_level": {"silhouette_score": 0.12},
+                "subcommunity_level": {"silhouette_score": 0.07},
+                "overall_interpretation": "weak but present structure",
+            }) as mock_report:
+                await pipeline._step_topic_analysis(ctx)
+
+            self.assertIn("topic_analysis", ctx.stats)
+            self.assertTrue(ctx.stats["topic_analysis"]["output_file"].endswith("topic_separation_report.json"))
+            mock_report.assert_called_once()
 
 
 class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
