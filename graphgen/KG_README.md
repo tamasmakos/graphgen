@@ -1,13 +1,14 @@
 # GraphGen: Knowledge Graph Generation Pipeline
 
-GraphGen transforms raw documents into a structured knowledge graph with optional analytics and Neo4j upload.
+GraphGen transforms raw documents into a structured knowledge graph through a single-run `KnowledgePipeline`, with optional analytics and Neo4j upload. Experimental iteration-based analysis remains available for thesis workflows, but it is separate from the default execution path.
 
 ## Key Architectural Features
 
 - **Dependency Injection**: The `KnowledgePipeline` orchestrator accepts uploader and extractor dependencies via its constructor.
 - **Config-driven**: Loads `config.yaml` + `.env` via `pydantic-settings` for consistent overrides.
 - **Modular Pipeline**: Each major step lives under `graphgen/pipeline/` for testable, isolated logic.
-- **Iterative Mode**: Optional batch-based experimentation for incremental graph evolution.
+- **Standard Runtime**: `graphgen.main` runs the single-pass `KnowledgePipeline` orchestrator.
+- **Experimental Utilities**: The repository also includes thesis-oriented iteration-based analysis tooling, but it is not the default runtime path.
 
 ## Module Structure
 
@@ -57,23 +58,15 @@ python3 -m graphgen.main
 
 ## Pipeline Stages
 
-Standard pipeline (`graphgen.main` -> `KnowledgePipeline`):
-
-1. **Lexical Graph Construction**: Build a heterogeneous document/segment/chunk scaffold.
-2. **Entity Extraction**: Run NER-guided constrained entity-relation extraction on chunks.
-3. **Semantic Enrichment**: Generate embeddings and attempt duplicate resolution.
-4. **Community Detection**: Cluster the entity-relation subgraph into topics/subtopics.
+1. **Lexical Graph Construction**: Build document/segment/chunk hierarchy.
+2. **Entity Extraction**: Extract entities and relations using configured backends.
+3. **Semantic Enrichment**: Generate embeddings and resolve duplicates.
+4. **Community Detection**: Cluster entities into topics/subtopics.
 5. **Summarization**: Generate LLM summaries for communities.
 6. **Topic Analysis** (optional): Statistical separation tests on embeddings.
 7. **Pruning**: Cleanup and simplify low-value nodes/edges.
-8. **Upload**: Persist to Neo4j as the final runtime step.
+8. **Upload**: Persist to Neo4j if configured.
 9. **Artifacts**: Save GraphML and analysis outputs.
-
-Iterative experimental pipeline (`IterativeOrchestrator`):
-- Repeats extraction over cumulative batches.
-- Uses real sentence-transformer embeddings for entity resolution.
-- Can optionally apply Node2Vec-based edge weighting before Leiden.
-- Uploads only the final cumulative graph.
 
 ## Operational Notes
 

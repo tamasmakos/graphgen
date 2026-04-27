@@ -10,9 +10,10 @@ The Knowledge Graph follows a strict hierarchy:
 - **ENTITY**: Extracted named entity.
 - **TOPIC**: Hierarchical topic cluster.
 
-## Iterative Experimentation
-The pipeline supports iterative processing of segments to simulate graph growth. 
-This mode includes automatic upload of the final cumulative graph to the configured database (Neo4j/FalkorDB).
+## Experimental / Thesis Workflows
+The default `graphgen` runtime executes a single-run `KnowledgePipeline` over the configured input set.
+
+The repository also retains experimental thesis utilities for iteration-based graph-growth analysis and related visualizations, but those are not the main execution path. Database upload remains part of the standard pipeline when a graph backend is configured and reachable.
 
 This python package provides a highly flexible pipeline for generating Knowledge Graphs from raw text data. It is designed to be modular, decoupling the lexical graph construction from semantic entity extraction.
 
@@ -31,6 +32,8 @@ You can run the pipeline directly via the command line interface:
 ```bash
 graphgen
 ```
+
+This command runs the standard non-iterative `KnowledgePipeline` defined in `graphgen.main` and `graphgen.orchestrator`.
 
 ## Logging & Verbosity
 
@@ -212,20 +215,14 @@ Inherit from `graphgen.utils.parsers.base.BaseDocumentParser` and implement the 
 The `KnowledgePipeline` class in `graphgen.orchestrator.py` defines the sequence of steps. You can subclass it or modify the `run` method to inject new steps (e.g. specialized topic modeling).
 
 ### Pipeline Steps (in order)
-1. **Lexical Graph Building**: Build a heterogeneous document/segment/chunk scaffold.
-2. **Entity Extraction**: Run NER-guided constrained entity and relation extraction.
-3. **Semantic Enrichment**: Generate embeddings and perform entity resolution.
-4. **Community Detection**: Run Leiden on the entity-relation subgraph to derive topics and subtopics.
-5. **Summarization**: Generate LLM summaries for communities.
-6. **Topic Analysis** (optional): Run statistical separation tests.
-7. **Pruning**: Graph cleanup.
-8. **Upload**: Database persistence.
-9. **Artifacts**: GraphML and report generation.
-
-Notes:
-- Ontology-derived labels are optional guidance for extraction, not a fully injected symbolic ontology graph.
-- Node2Vec edge weighting belongs to the iterative experimental workflow, not the default standard pipeline.
-- In the current standard pipeline, Neo4j reachability is checked before execution; iterative mode uploads only the final cumulative graph.
+1. **Lexical Graph Building**: Document parsing and chunking
+2. **Entity Extraction**: NLP-based entity and relation extraction
+3. **Semantic Enrichment**: RAG embeddings and entity resolution
+4. **Community Detection**: Leiden algorithm
+5. **Topic Analysis** (optional): Statistical separation tests
+6. **Pruning**: Graph cleanup
+7. **Upload**: Database persistence
+8. **Artifacts**: GraphML and report generation
 
 ---
 
@@ -261,7 +258,7 @@ If you see "ERROR: CUDA is not available", double-check your host's NVIDIA drive
 ## Visualization Tools
 
 ### Evolution of Modularity vs Topic Overlap
-To analyze how community structure (Modularity) and semantic topic distinctness (Topic Overlap) evolve over iterations, use the provided visualization script:
+For thesis or experimental runs that intentionally produce `iterative_experiment_results.csv`, use the provided visualization script to analyze how community structure (Modularity) and semantic topic distinctness (Topic Overlap) change across iterations:
 
 ```bash
 python3 tools/visualize_evolution.py --csv output/iterative_experiment_results.csv --output output/modularity_vs_overlap.png

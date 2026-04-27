@@ -198,14 +198,14 @@ class KnowledgePipeline:
 
     async def _step_enrichment(self, ctx: PipelineContext) -> None:
         try:
-            from graphgen.pipeline.embeddings.rag import generate_rag_embeddings
+            from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
             from graphgen.pipeline.graph_cleaning.resolution import resolve_entities_semantically
             from graphgen.evaluation import summarize_entity_resolution_effects
             
             logger.debug("Step 3: Semantic Enrichment")
             
-            logger.info("  3.1: Generating RAG Embeddings...")
-            generate_rag_embeddings(ctx.graph)
+            logger.info("  3.1: Generating entity embeddings for semantic resolution...")
+            generate_rag_embeddings(ctx.graph, node_types=['ENTITY_CONCEPT'])
             
             logger.info("  3.2: Semantic Resolution...")
             graph_before_resolution = deepcopy(ctx.graph)
@@ -241,25 +241,64 @@ class KnowledgePipeline:
             from graphgen.pipeline.community.subcommunities import add_enhanced_community_attributes_to_graph
             from graphgen.pipeline.summarization.core import generate_community_summaries
             from graphgen.config.llm import get_langchain_llm
-            
+            from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
+
             logger.debug("Step 4: Community Detection & Summarization")
-            
+
             logger.info("  4.1: Detecting Communities...")
             detector = CommunityDetector(self.settings.community)
+
+            baseline_modularity = None
+            node2vec_enabled = bool(getattr(self.settings.community, 'node2vec_enabled', False))
+            if node2vec_enabled:
+                logger.info("  4.1a: Computing unweighted baseline modularity...")
+                baseline_graph = ctx.graph.copy()
+                for u, v, d in baseline_graph.edges(data=True):
+                    if d.get('graph_type') == 'entity_relation':
+                        d['weight'] = 1.0
+                baseline_results = detector.detect_communities(baseline_graph)
+                baseline_modularity = baseline_results.get('modularity', 0.0)
+                logger.info("  4.1b: Applying Node2Vec edge weights...")
+                from graphgen.pipeline.embeddings.node2vec_wrapper import compute_node2vec_weights
+                weights = compute_node2vec_weights(
+                    ctx.graph,
+                    dimensions=self.settings.community.node2vec_dimensions,
+                    walk_length=self.settings.community.node2vec_walk_length,
+                    num_walks=self.settings.community.node2vec_num_walks,
+                    workers=1,
+                    seed=self.settings.community.seed or 42,
+                )
+                weighted_count = 0
+                for (u, v), weight in weights.items():
+                    if ctx.graph.has_edge(u, v) and ctx.graph[u][v].get('graph_type') == 'entity_relation':
+                        ctx.graph[u][v]['weight'] = weight
+                        weighted_count += 1
+                logger.info("Applied Node2Vec weights to %d entity-relation edges.", weighted_count)
+
             comm_results = detector.detect_communities(ctx.graph)
             communities = comm_results['assignments']
-            
+
+            if baseline_modularity is not None:
+                comm_results['modularity_baseline'] = baseline_modularity
+                comm_results['node2vec_enabled'] = True
+                comm_results['modularity_delta'] = comm_results.get('modularity', 0.0) - baseline_modularity
+            else:
+                comm_results['node2vec_enabled'] = False
+
             # Save stats
             ctx.stats['communities'] = comm_results
-            
+
             subcommunities = detector.detect_subcommunities_leiden(ctx.graph, communities)
             add_enhanced_community_attributes_to_graph(ctx.graph, communities, subcommunities)
-            
+
             logger.info("  4.2: Generating Summaries...")
             llm = get_langchain_llm(config, purpose='summarization')
             summary_stats = await generate_community_summaries(ctx.graph, llm)
             ctx.stats['summarization'] = summary_stats
-            
+
+            logger.info("  4.3: Generating topic/subtopic embeddings for analytics...")
+            generate_rag_embeddings(ctx.graph, node_types=['TOPIC', 'SUBTOPIC'])
+
         except Exception as e:
             logger.error(f"Community detection or summarization failed: {e}")
             ctx.add_error("communities", str(e))
@@ -271,7 +310,7 @@ class KnowledgePipeline:
             return
         
         try:
-            from graphgen.pipeline.analysis.topic_separation import generate_topic_separation_report
+            from graphgen.analytics.reporting import generate_topic_separation_report
             
             logger.info("Step 4.5: Topic Separation Analysis")
             

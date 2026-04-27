@@ -120,6 +120,7 @@ class ExtractionSettings(BaseSettings):
     # GLiNER Configuration
     gliner_model: str = "knowledgator/gliner-multitask-large-v0.5"
     gliner_threshold: float = 0.5
+    gliner_preload: bool = True
     gliner2_top_k_labels: int = 5
     gliner2_label_descriptions: Dict[str, str] = Field(default_factory=dict)
     device: str = "auto" # "auto", "cuda", "cpu"
@@ -162,6 +163,7 @@ class ExtractionSettings(BaseSettings):
 
     # File Selection (for incremental/selective processing)
     file_pattern: str = Field("*.txt", alias="EXTRACTION_FILE_PATTERN")
+    max_chunks: int = 0  # 0 = no limit after lexical chunking
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -214,6 +216,7 @@ class AnalyticsSettings(BaseSettings):
     
     # Topic Separation & Modularity
     topic_separation_test: bool = True  # Legacy flag, kept for backward compatibility logic if needed
+    output_file: str = "topic_separation_report.json"
     # Silhouette analysis thresholds (used in topic_separation.py)
     # These control when silhouette is considered mathematically valid and
     # practically interpretable. See `run_silhouette_analysis` for details.
@@ -249,12 +252,15 @@ class AnalyticsSettings(BaseSettings):
 class TestModeSettings(BaseSettings):
     """
     Test Mode Configuration.
-    
+
     When enabled, limits the number of documents processed for faster testing.
     Set max_documents to 0 to process all documents (no limit).
+    `max_chunks` provides an additional global lexical chunk budget for
+    resource-constrained preflight runs.
     """
     enabled: bool = False  # Toggle test mode
     max_documents: int = 0  # 0 = no limit, process all documents
+    max_chunks: int = 0  # 0 = no limit, process all lexical chunks
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -300,6 +306,19 @@ class PipelineSettings(BaseSettings):
     community: CommunitySettings = Field(default_factory=CommunitySettings)
     test_mode: TestModeSettings = Field(default_factory=TestModeSettings)
     iterative: IterativeSettings = Field(default_factory=IterativeSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_analysis_aliases(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        has_analysis = values.get("analysis") is not None
+        has_analytics = values.get("analytics") is not None
+        if has_analytics and not has_analysis:
+            values["analysis"] = values["analytics"]
+        elif has_analysis and not has_analytics:
+            values["analytics"] = values["analysis"]
+        return values
     
     # Global/Runtime flags
     debug: bool = False

@@ -12,16 +12,19 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 
 import re
-from langchain_core.utils.json import parse_json_markdown
+from langchain_core.utils.json import parse_json_markdown, parse_partial_json
 
 from .models import SummarizationTask
 
 logger = logging.getLogger(__name__)
 
 # Configuration
-MAX_CONCURRENT_SUMMARIES = 5  # Reduced concurrency due to larger context
+MAX_CONCURRENT_SUMMARIES = 2  # Keep concurrency low to avoid Groq TPM throttling on large runs
+RATE_LIMIT_RETRY_ATTEMPTS = 4
+RATE_LIMIT_RETRY_BASE_DELAY = 1.5
 CONTEXT_TOKEN_LIMIT = 8000     # Target context size (approx chars * 0.25)
-MAX_CHARS_PER_CHUNK = 2000    # Trucate individual chunks to avoid domination
+MAX_CHARS_PER_CHUNK = 2000     # Truncate individual chunks to avoid domination
+
 # XML Prompt Definition
 COMMUNITY_REPORT_PROMPT = """
 <system_role>
@@ -73,9 +76,176 @@ Return a **SINGLE JSON OBJECT** with the following structure:
 def _truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + "..." if len(text) > max_chars else text
 
+
+def _extract_json_object(content: str) -> str:
+    stripped = content.strip()
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
+    if fence_match:
+        return fence_match.group(1)
+
+    object_match = re.search(r"\{.*\}", stripped, re.DOTALL)
+    if object_match:
+        return object_match.group(0)
+
+    raise ValueError("No JSON object found in output")
+
+
+def _escape_inner_quotes_in_string_fields(json_str: str) -> str:
+    field_pattern = re.compile(r'"(?:title|summary|explanation)"\s*:\s*"')
+    result: List[str] = []
+    cursor = 0
+
+    while True:
+        match = field_pattern.search(json_str, cursor)
+        if not match:
+            result.append(json_str[cursor:])
+            break
+
+        result.append(json_str[cursor:match.end()])
+        i = match.end()
+        while i < len(json_str):
+            ch = json_str[i]
+            if ch == '\\':
+                if i + 1 < len(json_str):
+                    result.append(json_str[i:i + 2])
+                    i += 2
+                    continue
+                result.append(ch)
+                i += 1
+                continue
+            if ch == '"':
+                j = i + 1
+                while j < len(json_str) and json_str[j].isspace():
+                    j += 1
+                if j < len(json_str) and json_str[j] in ',}]':
+                    result.append(ch)
+                    i += 1
+                    break
+                result.append('\\"')
+                i += 1
+                continue
+
+            result.append(ch)
+            i += 1
+
+        cursor = i
+
+    return ''.join(result)
+
+
+def _balance_json_delimiters(json_str: str) -> str:
+    result: List[str] = []
+    stack: List[str] = []
+    in_string = False
+    escape = False
+
+    for ch in json_str:
+        if in_string:
+            result.append(ch)
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            result.append(ch)
+            continue
+
+        if ch in '{[':
+            stack.append(ch)
+            result.append(ch)
+            continue
+
+        if ch in '}]':
+            expected_open = '{' if ch == '}' else '['
+            while stack and stack[-1] != expected_open:
+                result.append('}' if stack[-1] == '{' else ']')
+                stack.pop()
+            if stack and stack[-1] == expected_open:
+                stack.pop()
+            result.append(ch)
+            continue
+
+        result.append(ch)
+
+    while stack:
+        result.append('}' if stack.pop() == '{' else ']')
+
+    return ''.join(result)
+
+
+def _repair_summary_json(json_str: str) -> str:
+    repaired = json_str.strip()
+    repaired = _escape_inner_quotes_in_string_fields(repaired)
+    repaired = re.sub(r'\}\s*\{', '}, {', repaired)
+    repaired = _balance_json_delimiters(repaired)
+    return repaired
+
+
+def _parse_summary_response(content: str) -> Dict[str, Any]:
+    json_str = _extract_json_object(content)
+    try:
+        data = parse_json_markdown(content)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    repaired = _repair_summary_json(json_str)
+
+    for candidate in (repaired, json_str):
+        try:
+            data = parse_partial_json(candidate)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    raise ValueError("No JSON object found in output")
+
+
 def _estimate_tokens(text: str) -> int:
     # Rough estimate: 4 chars per token
     return len(text) // 4
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return '429' in message or 'rate limit' in message or 'ratelimit' in message
+
+
+async def _invoke_with_rate_limit_retry(llm: Any, prompt: str) -> Any:
+    delay = RATE_LIMIT_RETRY_BASE_DELAY
+    last_exc: Exception | None = None
+    for attempt in range(1, RATE_LIMIT_RETRY_ATTEMPTS + 1):
+        try:
+            return await llm.ainvoke(prompt)
+        except Exception as exc:
+            last_exc = exc
+            if not _is_rate_limit_error(exc) or attempt == RATE_LIMIT_RETRY_ATTEMPTS:
+                raise
+            logger.warning(
+                "Rate limit during summarization attempt %d/%d; retrying in %.1fs",
+                attempt,
+                RATE_LIMIT_RETRY_ATTEMPTS,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Summarization retry loop exited unexpectedly")
+
 
 def _format_context_xml(task: SummarizationTask) -> str:
     """Format the task data into XML sections for the prompt."""
@@ -326,27 +496,13 @@ async def process_batch_tasks(llm: Any, tasks: List[SummarizationTask]) -> List[
                 formatted_prompt = COMMUNITY_REPORT_PROMPT.format(context_xml=context_xml)
                 
                 # Invoke LLM
-                response = await llm.ainvoke(formatted_prompt)
+                response = await _invoke_with_rate_limit_retry(llm, formatted_prompt)
                 content = response.content if hasattr(response, 'content') else str(response)
                 
                 # Robust parsing
                 try:
-                    # attempt 1: parse_json_markdown
-                    try:
-                        data = parse_json_markdown(content)
-                    except Exception:
-                        # attempt 2: try manual comma fix for common LLM error: } { -> }, {
-                        fixed_content = re.sub(r'\}\s*\{', '}, {', content)
-                        data = parse_json_markdown(fixed_content)
-                    
-                    if not isinstance(data, dict):
-                         # attempt 3: find { ... } and parse
-                         match = re.search(r'\{.*\}', content, re.DOTALL)
-                         if match:
-                             data = json.loads(match.group(0))
-                         else:
-                             raise ValueError("No JSON object found in output")
-                             
+                    data = _parse_summary_response(content)
+                            
                     task.title = data.get('title', 'Untitled')
                     task.summary = data.get('summary', '')
                     task.findings = data.get('findings', [])
@@ -359,7 +515,7 @@ async def process_batch_tasks(llm: Any, tasks: List[SummarizationTask]) -> List[
                 except Exception as parse_err:
                     logger.error(f"JSON Parse Error for {task.task_id}: {parse_err}")
                     logger.debug(f"Raw response for {task.task_id}:\n{content}")
-                    
+
                     # Fallback
                     task.title = "Analysis Partially Failed"
                     task.summary = f"Could not parse LLM response. Error: {str(parse_err)}"

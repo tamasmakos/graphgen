@@ -233,53 +233,99 @@ async def build_lexical_graph(deps: PipelineContext, input_dir: str, config: Dic
     """Phase 1: Build the complete lexical graph structure sequentially"""
     config = config or {}
     results = {"documents_processed": 0, "total_segments": 0, "total_chunks": 0, "errors": []}
-    
+
     try:
         if not os.path.exists(input_dir):
             raise FileNotFoundError(f"Input directory {input_dir} not found")
-        
+
         # Check if a specific file pattern is provided (for incremental processing)
         extraction_config = config.get('extraction', {})
         if hasattr(extraction_config, 'model_dump'):
             extraction_config = extraction_config.model_dump()
-            
+
         file_pattern = extraction_config.get('file_pattern')
         all_files = sorted(os.listdir(input_dir))
         if file_pattern:
-            # Process only the specified file
             import fnmatch
             filenames = sorted(f for f in all_files if fnmatch.fnmatch(f, file_pattern))
             logger.info(f"Processing specific file(s) matching pattern '{file_pattern}': {filenames}")
         else:
-            # Process all .txt files
             filenames = sorted(f for f in all_files if f.endswith('.txt'))
             logger.info(f"Found {len(filenames)} files to process")
-        
-        # Apply test_mode document limit if configured
+
         test_mode_cfg = config.get('test_mode', {})
         if hasattr(test_mode_cfg, 'model_dump'):
             test_mode_cfg = test_mode_cfg.model_dump()
-        
+
         test_mode_enabled = test_mode_cfg.get('enabled', False)
         max_documents = test_mode_cfg.get('max_documents', 0)
-        
         if test_mode_enabled and max_documents > 0 and len(filenames) > max_documents:
             logger.info(f"Test mode enabled: limiting to {max_documents} documents (from {len(filenames)} available)")
             filenames = filenames[:max_documents]
-        
+
+        max_chunks = test_mode_cfg.get('max_chunks', 0) or extraction_config.get('max_chunks', 0)
+        chunk_budget_remaining = max_chunks if max_chunks and max_chunks > 0 else None
+        chunk_node_labels = {'CHUNK'}
+        if schema:
+            for node_schema in schema.nodes.values():
+                if getattr(node_schema, 'source_type', None) == 'chunk' and getattr(node_schema, 'label', None):
+                    chunk_node_labels.add(str(node_schema.label))
+
         for filename in filenames:
-                
+            if chunk_budget_remaining is not None and chunk_budget_remaining <= 0:
+                logger.info("Chunk budget exhausted before processing remaining documents.")
+                break
+
             doc_result = await process_single_document_lexical(deps, filename, input_dir, config, schema=schema)
-                
+
+            if chunk_budget_remaining is not None:
+                chunk_count = doc_result.get("chunks_added", 0)
+                if chunk_count > chunk_budget_remaining:
+                    overflow = chunk_count - chunk_budget_remaining
+                    logger.info(
+                        "Trimming %d excess chunk(s) from %s to respect max_chunks=%d.",
+                        overflow,
+                        filename,
+                        max_chunks,
+                    )
+                    chunk_ids_to_remove = []
+                    extraction_task_ids = set()
+                    for node_id in reversed(list(deps.graph.nodes())):
+                        if overflow <= 0:
+                            break
+                        node_data = deps.graph.nodes[node_id]
+                        if str(node_data.get('node_type')) not in chunk_node_labels:
+                            continue
+                        if not node_id.startswith(f"DOC_{filename}_"):
+                            continue
+                        chunk_ids_to_remove.append(node_id)
+                        extraction_task_ids.add(node_id)
+                        overflow -= 1
+                    for chunk_id in chunk_ids_to_remove:
+                        if deps.graph.has_node(chunk_id):
+                            deps.graph.remove_node(chunk_id)
+                    deps.extraction_tasks = [
+                        task for task in deps.extraction_tasks if task.chunk_id not in extraction_task_ids
+                    ]
+                    kept_chunks = chunk_count - len(chunk_ids_to_remove)
+                    doc_result["chunks_added"] = kept_chunks
+
+                chunk_budget_remaining -= doc_result.get("chunks_added", 0)
+                logger.info(
+                    "Chunk budget status after %s: remaining=%s",
+                    filename,
+                    chunk_budget_remaining,
+                )
+
             results["documents_processed"] += 1
             results["total_segments"] += doc_result.get("segments_added", 0)
             results["total_chunks"] += doc_result.get("chunks_added", 0)
-            
+
             if doc_result.get("errors"):
                 results["errors"].extend(doc_result["errors"])
-                
+
         return results
-        
+
     except Exception as e:
         error_msg = f"Error in build_lexical_graph: {str(e)}"
         logger.error(error_msg, exc_info=True)

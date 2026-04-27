@@ -52,7 +52,7 @@ community:
   min_community_size: 3
   seed: 42
   
-  # Node2Vec Config
+  # Node2Vec Config (kept enabled for the thesis workflow)
   node2vec_enabled: true
   node2vec_dimensions: 64
   node2vec_walk_length: 16
@@ -70,10 +70,3 @@ analytics:
   visualization:
     interactive: true
     heatmap: true
-
-# Iterative Experiment Configuration - Smoke Test
-iterative:
-  enabled: true
-  batch_size: 3
-  iterations: 4
-  random_seed: 42
