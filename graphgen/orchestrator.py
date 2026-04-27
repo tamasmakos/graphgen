@@ -198,14 +198,14 @@ class KnowledgePipeline:
 
     async def _step_enrichment(self, ctx: PipelineContext) -> None:
         try:
-            from graphgen.pipeline.embeddings.rag import generate_rag_embeddings
+            from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
             from graphgen.pipeline.graph_cleaning.resolution import resolve_entities_semantically
             from graphgen.evaluation import summarize_entity_resolution_effects
             
             logger.debug("Step 3: Semantic Enrichment")
             
-            logger.info("  3.1: Generating RAG Embeddings...")
-            generate_rag_embeddings(ctx.graph)
+            logger.info("  3.1: Generating entity embeddings for semantic resolution...")
+            generate_rag_embeddings(ctx.graph, node_types=['ENTITY_CONCEPT'])
             
             logger.info("  3.2: Semantic Resolution...")
             graph_before_resolution = deepcopy(ctx.graph)
@@ -241,6 +241,7 @@ class KnowledgePipeline:
             from graphgen.pipeline.community.subcommunities import add_enhanced_community_attributes_to_graph
             from graphgen.pipeline.summarization.core import generate_community_summaries
             from graphgen.config.llm import get_langchain_llm
+            from graphgen.utils.vector_embedder.rag import generate_rag_embeddings
 
             logger.debug("Step 4: Community Detection & Summarization")
 
@@ -294,6 +295,9 @@ class KnowledgePipeline:
             llm = get_langchain_llm(config, purpose='summarization')
             summary_stats = await generate_community_summaries(ctx.graph, llm)
             ctx.stats['summarization'] = summary_stats
+
+            logger.info("  4.3: Generating topic/subtopic embeddings for analytics...")
+            generate_rag_embeddings(ctx.graph, node_types=['TOPIC', 'SUBTOPIC'])
 
         except Exception as e:
             logger.error(f"Community detection or summarization failed: {e}")

@@ -19,9 +19,12 @@ from .models import SummarizationTask
 logger = logging.getLogger(__name__)
 
 # Configuration
-MAX_CONCURRENT_SUMMARIES = 5  # Reduced concurrency due to larger context
+MAX_CONCURRENT_SUMMARIES = 2  # Keep concurrency low to avoid Groq TPM throttling on large runs
+RATE_LIMIT_RETRY_ATTEMPTS = 4
+RATE_LIMIT_RETRY_BASE_DELAY = 1.5
 CONTEXT_TOKEN_LIMIT = 8000     # Target context size (approx chars * 0.25)
-MAX_CHARS_PER_CHUNK = 2000    # Trucate individual chunks to avoid domination
+MAX_CHARS_PER_CHUNK = 2000     # Truncate individual chunks to avoid domination
+
 # XML Prompt Definition
 COMMUNITY_REPORT_PROMPT = """
 <system_role>
@@ -214,6 +217,35 @@ def _parse_summary_response(content: str) -> Dict[str, Any]:
 def _estimate_tokens(text: str) -> int:
     # Rough estimate: 4 chars per token
     return len(text) // 4
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return '429' in message or 'rate limit' in message or 'ratelimit' in message
+
+
+async def _invoke_with_rate_limit_retry(llm: Any, prompt: str) -> Any:
+    delay = RATE_LIMIT_RETRY_BASE_DELAY
+    last_exc: Exception | None = None
+    for attempt in range(1, RATE_LIMIT_RETRY_ATTEMPTS + 1):
+        try:
+            return await llm.ainvoke(prompt)
+        except Exception as exc:
+            last_exc = exc
+            if not _is_rate_limit_error(exc) or attempt == RATE_LIMIT_RETRY_ATTEMPTS:
+                raise
+            logger.warning(
+                "Rate limit during summarization attempt %d/%d; retrying in %.1fs",
+                attempt,
+                RATE_LIMIT_RETRY_ATTEMPTS,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Summarization retry loop exited unexpectedly")
+
 
 def _format_context_xml(task: SummarizationTask) -> str:
     """Format the task data into XML sections for the prompt."""
@@ -464,7 +496,7 @@ async def process_batch_tasks(llm: Any, tasks: List[SummarizationTask]) -> List[
                 formatted_prompt = COMMUNITY_REPORT_PROMPT.format(context_xml=context_xml)
                 
                 # Invoke LLM
-                response = await llm.ainvoke(formatted_prompt)
+                response = await _invoke_with_rate_limit_retry(llm, formatted_prompt)
                 content = response.content if hasattr(response, 'content') else str(response)
                 
                 # Robust parsing

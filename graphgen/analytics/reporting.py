@@ -108,6 +108,40 @@ def interpret_separation(
     
     return "; ".join(parts)
 
+def _coerce_embedding(value: Any) -> Optional[np.ndarray]:
+    if isinstance(value, list):
+        return np.array(value, dtype=float)
+    if isinstance(value, np.ndarray):
+        return value.astype(float)
+    return None
+
+
+def _extract_label_key(node_id: str, level: str) -> Optional[str]:
+    parts = node_id.split("_")
+    if (level == "COMMUNITY" or level == "TOPIC") and (node_id.startswith("COMMUNITY_") or node_id.startswith("TOPIC_")):
+        if len(parts) >= 2:
+            return parts[1]
+        return None
+    if (level == "SUBCOMMUNITY" or level == "SUBTOPIC") and (node_id.startswith("SUBCOMMUNITY_") or node_id.startswith("SUBTOPIC_")):
+        if len(parts) >= 3:
+            return f"{parts[1]}::{parts[2]}"
+        return None
+    return None
+
+
+
+def _build_numeric_labels(embeddings: Dict[str, np.ndarray], level: str) -> Dict[str, int]:
+    label_keys: Dict[str, str] = {}
+    for node_id in embeddings.keys():
+        label_key = _extract_label_key(node_id, level)
+        if label_key is not None:
+            label_keys[node_id] = label_key
+
+    unique_keys = {key: idx for idx, key in enumerate(sorted(set(label_keys.values())))}
+    return {node_id: unique_keys[label_key] for node_id, label_key in label_keys.items()}
+
+
+
 def extract_topic_embeddings(
     graph: nx.DiGraph,
     levels: Optional[List[str]] = None
@@ -116,10 +150,10 @@ def extract_topic_embeddings(
         levels = ["COMMUNITY", "SUBCOMMUNITY"]
 
     result: Dict[str, Dict[str, np.ndarray]] = {}
+    entity_types = {'ENTITY_CONCEPT', 'ENTITY', 'NAMEDENTITY', 'PLACE'}
     
     for level in levels:
         level_embeddings: Dict[str, np.ndarray] = {}
-        target_node_types = []
         if level == "COMMUNITY":
             target_node_types = ["COMMUNITY", "TOPIC"]
         elif level == "SUBCOMMUNITY":
@@ -130,31 +164,24 @@ def extract_topic_embeddings(
         for node_id, node_data in graph.nodes(data=True):
             if str(node_data.get('node_type', '')).upper() not in target_node_types:
                 continue
-            
-            embedding = None
-            if 'embedding' in node_data:
-                emb = node_data['embedding']
-                if isinstance(emb, list):
-                    embedding = np.array(emb)
-                elif isinstance(emb, np.ndarray):
-                    embedding = emb
-            
-            if embedding is None:
-                # Fallback: Mean of member entity embeddings
-                member_embeddings = []
-                for predecessor in graph.predecessors(node_id):
-                    pred_data = graph.nodes.get(predecessor, {})
-                    if str(pred_data.get('node_type', '')).upper() in ['ENTITY_CONCEPT', 'ENTITY', 'NAMEDENTITY', 'PLACE']:
-                        if 'embedding' in pred_data:
-                            emb = pred_data['embedding']
-                            if isinstance(emb, list):
-                                member_embeddings.append(np.array(emb))
-                            elif isinstance(emb, np.ndarray):
-                                member_embeddings.append(emb)
-                
-                if member_embeddings:
-                    embedding = np.mean(member_embeddings, axis=0)
-            
+
+            member_embeddings = []
+            for predecessor in graph.predecessors(node_id):
+                pred_data = graph.nodes.get(predecessor, {})
+                if str(pred_data.get('node_type', '')).upper() not in entity_types:
+                    continue
+                embedding = _coerce_embedding(pred_data.get('embedding'))
+                if embedding is None:
+                    continue
+                synthetic_id = f"{node_id}__{predecessor}"
+                level_embeddings[synthetic_id] = embedding
+                member_embeddings.append(embedding)
+
+            if member_embeddings:
+                level_embeddings[node_id] = np.mean(member_embeddings, axis=0)
+                continue
+
+            embedding = _coerce_embedding(node_data.get('embedding'))
             if embedding is not None:
                 level_embeddings[node_id] = embedding
         
@@ -171,21 +198,7 @@ def analyze_level(
     if len(embeddings) < 3:
         return None
     
-    labels: Dict[str, int] = {}
-    for node_id in embeddings.keys():
-        if (level == "COMMUNITY" or level == "TOPIC") and (node_id.startswith("COMMUNITY_") or node_id.startswith("TOPIC_")):
-            try:
-                label = int(node_id.split("_")[1])
-                labels[node_id] = label
-            except (IndexError, ValueError):
-                continue
-        elif (level == "SUBCOMMUNITY" or level == "SUBTOPIC") and (node_id.startswith("SUBCOMMUNITY_") or node_id.startswith("SUBTOPIC_")):
-            try:
-                label = int(node_id.split("_")[1])
-                labels[node_id] = label
-            except (IndexError, ValueError):
-                continue
-    
+    labels = _build_numeric_labels(embeddings, level)
     if len(labels) < 3:
         return None
     
@@ -236,13 +249,7 @@ def generate_topic_separation_report(
     pairwise = []
     if community_result and "COMMUNITY" in all_embeddings:
         comm_embeddings = all_embeddings["COMMUNITY"]
-        labels = {}
-        for node_id in comm_embeddings.keys():
-            if node_id.startswith("COMMUNITY_"):
-                try:
-                    labels[node_id] = int(node_id.split("_")[1])
-                except (IndexError, ValueError):
-                    continue
+        labels = _build_numeric_labels(comm_embeddings, "COMMUNITY")
         pairwise = run_pairwise_comparisons(comm_embeddings, labels)
     
     # Global separation

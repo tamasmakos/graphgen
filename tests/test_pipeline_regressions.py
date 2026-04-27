@@ -21,6 +21,8 @@ from graphgen.pipeline.entity_relation.extraction import (
     extract_relations_with_llm_async,
     process_extraction_task,
 )
+from graphgen.pipeline.embeddings.rag import generate_rag_embeddings as mock_generate_rag_embeddings
+from graphgen.utils.vector_embedder.rag import generate_rag_embeddings as real_generate_rag_embeddings
 from graphgen.utils.labels import resolve_entity_labels
 from graphgen.pipeline.entity_relation.extractors import (
     DSPyExtractor,
@@ -34,7 +36,7 @@ from graphgen.pipeline.entity_relation.extractors import (
 )
 from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
 from graphgen.pipeline.summarization.summarizer import DSPySummarizer
-from graphgen.pipeline.summarization.core import _parse_summary_response
+from graphgen.pipeline.summarization.core import _parse_summary_response, process_batch_tasks
 from graphgen.pipeline.summarization.models import SummarizationTask
 from graphgen.main import resolve_env_file
 
@@ -509,6 +511,7 @@ class LexicalGraphBudgetRegressionTests(unittest.IsolatedAsyncioTestCase):
         chunk_nodes = [n for n, d in ctx.graph.nodes(data=True) if d.get("node_type") == "ChunkNode"]
         self.assertEqual(len(chunk_nodes), 2)
 
+    async def test_step_topic_analysis_writes_report_when_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = PipelineSettings(
                 infra={"input_dir": "input", "output_dir": tmpdir},
@@ -532,6 +535,121 @@ class LexicalGraphBudgetRegressionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("topic_analysis", ctx.stats)
             self.assertTrue(ctx.stats["topic_analysis"]["output_file"].endswith("topic_separation_report.json"))
             mock_report.assert_called_once()
+
+    async def test_step_communities_generates_topic_and_subtopic_embeddings_after_summaries(self):
+        settings = PipelineSettings(
+            infra={"input_dir": "input", "output_dir": "output"},
+            analytics={"save_provenance": False},
+            analysis={"topic_separation_test": False},
+            community={"node2vec_enabled": False},
+        )
+        pipeline = KnowledgePipeline(settings=settings, uploader=None, extractor=None)
+        ctx = PipelineContext(graph=nx.DiGraph())
+        ctx.graph.add_node("ENTITY_A", node_type="ENTITY_CONCEPT", name="UKRAINE")
+        ctx.graph.add_node("ENTITY_B", node_type="ENTITY_CONCEPT", name="ENERGY_SECURITY")
+        ctx.graph.add_edge("ENTITY_A", "ENTITY_B", graph_type="entity_relation", weight=1.0)
+
+        detector_instance = Mock()
+        detector_instance.detect_communities.return_value = {"assignments": {"ENTITY_A": 0, "ENTITY_B": 0}, "modularity": 0.57}
+        detector_instance.detect_subcommunities_leiden.return_value = {"ENTITY_A": (0, 0), "ENTITY_B": (0, 0)}
+
+        async def fake_summaries(graph, llm):
+            graph.add_node("TOPIC_0", node_type="TOPIC", title="Energy Security", summary="Energy security in Europe")
+            graph.add_node("SUBTOPIC_0_0", node_type="SUBTOPIC", title="Gas Supply", summary="Gas supply resilience")
+            graph.add_edge("ENTITY_A", "TOPIC_0", label="IN_TOPIC")
+            graph.add_edge("ENTITY_B", "SUBTOPIC_0_0", label="IN_TOPIC")
+            return {"topics": 1, "subtopics": 1}
+
+        with patch("graphgen.pipeline.community.detection.CommunityDetector", return_value=detector_instance), \
+             patch("graphgen.pipeline.community.subcommunities.add_enhanced_community_attributes_to_graph"), \
+             patch("graphgen.pipeline.summarization.core.generate_community_summaries", side_effect=fake_summaries) as mock_summaries, \
+             patch("graphgen.config.llm.get_langchain_llm", return_value=object()), \
+             patch("graphgen.utils.vector_embedder.rag.generate_rag_embeddings", return_value={"TOPIC_0": [0.1, 0.2], "SUBTOPIC_0_0": [0.2, 0.3]}) as mock_embed:
+            await pipeline._step_communities(ctx, settings.model_dump())
+
+        mock_summaries.assert_awaited_once()
+        mock_embed.assert_called_once()
+
+    def test_real_rag_embeddings_cover_topic_and_subtopic_nodes(self):
+        graph = nx.DiGraph()
+        graph.add_node("ENTITY_A", node_type="ENTITY_CONCEPT", name="UKRAINE", entity_type="PLACE")
+        graph.add_node("ENTITY_B", node_type="ENTITY_CONCEPT", name="ENERGY_SECURITY", entity_type="CONCEPT")
+        graph.add_node("TOPIC_0", node_type="TOPIC", title="Energy and Security", summary="Discussion of energy security and Ukraine")
+        graph.add_node("SUBTOPIC_0_0", node_type="SUBTOPIC", title="Energy Dependence", summary="Gas supply and resilience")
+        graph.add_edge("ENTITY_A", "TOPIC_0", label="IN_TOPIC")
+        graph.add_edge("ENTITY_B", "TOPIC_0", label="IN_TOPIC")
+        graph.add_edge("ENTITY_B", "SUBTOPIC_0_0", label="IN_TOPIC")
+
+        embeddings = real_generate_rag_embeddings(graph, batch_size=4, node_types=["ENTITY_CONCEPT", "TOPIC", "SUBTOPIC"])
+
+        self.assertIn("TOPIC_0", embeddings)
+        self.assertIn("SUBTOPIC_0_0", embeddings)
+        self.assertIn("embedding", graph.nodes["TOPIC_0"])
+        self.assertIn("embedding", graph.nodes["SUBTOPIC_0_0"])
+        self.assertGreater(len(graph.nodes["TOPIC_0"]["embedding"]), 0)
+        self.assertGreater(len(graph.nodes["SUBTOPIC_0_0"]["embedding"]), 0)
+
+    def test_topic_separation_report_analyzes_topic_and_subtopic_embeddings(self):
+        from graphgen.analytics.reporting import generate_topic_separation_report
+
+        graph = nx.DiGraph()
+        graph.add_node("TOPIC_0", node_type="TOPIC", embedding=[1.0, 0.0], title="T0", summary="S0")
+        graph.add_node("TOPIC_1", node_type="TOPIC", embedding=[0.0, 1.0], title="T1", summary="S1")
+        graph.add_node("TOPIC_2", node_type="TOPIC", embedding=[0.9, 0.1], title="T2", summary="S2")
+        graph.add_node("TOPIC_3", node_type="TOPIC", embedding=[0.1, 0.9], title="T3", summary="S3")
+        graph.add_node("SUBTOPIC_0_0", node_type="SUBTOPIC", embedding=[1.0, 0.0], title="ST00", summary="SS00")
+        graph.add_node("SUBTOPIC_0_1", node_type="SUBTOPIC", embedding=[0.95, 0.05], title="ST01", summary="SS01")
+        graph.add_node("SUBTOPIC_1_0", node_type="SUBTOPIC", embedding=[0.0, 1.0], title="ST10", summary="SS10")
+        graph.add_node("SUBTOPIC_1_1", node_type="SUBTOPIC", embedding=[0.05, 0.95], title="ST11", summary="SS11")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = generate_topic_separation_report(
+                graph,
+                str(Path(tmpdir) / "topic_separation_report.json"),
+                PipelineSettings().analysis,
+            )
+
+        self.assertIsNotNone(report["community_level"])
+        self.assertIsNotNone(report["subcommunity_level"])
+        self.assertGreater(report["global_separation"], 0.0)
+        self.assertGreater(report["community_level"]["n_samples"], 3)
+        self.assertGreater(report["subcommunity_level"]["n_samples"], 3)
+
+    async def test_process_batch_tasks_retries_rate_limit_errors(self):
+        task = SummarizationTask(
+            task_id="TOPIC_0",
+            community_id=0,
+            subcommunity_id=None,
+            is_topic=True,
+            chunk_texts=["Example chunk text"],
+            entities=[{"name": "EUROPEAN_UNION", "id": "EUROPEAN_UNION", "type": "ORG", "degree": 10}],
+            relationships=[("EUROPEAN_UNION", "SUPPORTS", "UKRAINE")],
+            chunk_ids=["CHUNK_0"],
+            entity_ids=["EUROPEAN_UNION"],
+            sub_summaries=[{"id": "SUBTOPIC_0_0", "summary": "Prior subtopic summary"}],
+        )
+
+        class FakeResponse:
+            def __init__(self, content):
+                self.content = content
+
+        class FakeLLM:
+            def __init__(self):
+                self.calls = 0
+            async def ainvoke(self, prompt):
+                self.calls += 1
+                if self.calls < 3:
+                    raise RuntimeError("Error code: 429 - rate limited")
+                return FakeResponse('{"title":"Recovered summary","summary":"Recovered after retry","findings":[{"summary":"Recovered","explanation":"Retry succeeded"}]}')
+
+        llm = FakeLLM()
+        with patch("graphgen.pipeline.summarization.core.RATE_LIMIT_RETRY_BASE_DELAY", 0.01):
+            results = await process_batch_tasks(llm, [task])
+
+        self.assertEqual(llm.calls, 3)
+        self.assertEqual(results[0].title, "Recovered summary")
+        self.assertEqual(results[0].summary, "Recovered after retry")
+        self.assertEqual(results[0].findings[0]["summary"], "Recovered")
 
 
 class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -590,8 +708,10 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
             ctx.graph.add_edge("MARIO_DRAGHI", "ECB_1", label="LEADS")
             ctx.graph.add_edge("MARIO_DRAGHI", "ECB_2", label="LEADS")
 
-            with patch("graphgen.pipeline.embeddings.rag.generate_rag_embeddings", return_value=None):
+            with patch("graphgen.utils.vector_embedder.rag.generate_rag_embeddings", return_value={}) as mock_embed:
                 await pipeline._step_enrichment(ctx)
+
+            mock_embed.assert_called_once()
 
             self.assertIn("entity_resolution_diagnostics", ctx.diagnostics)
             diag_path = Path(ctx.diagnostics["entity_resolution_diagnostics"])
