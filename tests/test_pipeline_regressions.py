@@ -17,9 +17,11 @@ from graphgen.pipeline.entity_relation.extraction import (
     _extract_entities_for_chunk,
     process_extraction_task,
 )
+from graphgen.utils.labels import resolve_entity_labels
 from graphgen.pipeline.entity_relation.extractors import (
     DSPyExtractor,
     LangChainExtractor,
+    _is_generic_relation_triplet,
     get_extractor,
 )
 from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
@@ -81,6 +83,13 @@ class ExtractionRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LLMConfigRegressionTests(unittest.TestCase):
+    def test_resolve_entity_labels_keeps_default_seed_when_ontology_enabled_without_manual_labels(self):
+        labels = resolve_entity_labels({
+            "ontology": {"enabled": True, "merge_with_manual": True},
+        })
+        self.assertIn("PERSON", labels)
+        self.assertIn("EVENT", labels)
+
     @patch("graphgen.config.llm.ChatGroq")
     def test_get_langchain_llm_uses_env_groq_key_when_config_missing_it(self, mock_chatgroq):
         mock_chatgroq.return_value = object()
@@ -126,6 +135,15 @@ class LLMConfigRegressionTests(unittest.TestCase):
 
 
 class DSPyConfigRegressionTests(unittest.TestCase):
+    def test_generic_triplet_filter_flags_placeholder_policy_node(self):
+        self.assertTrue(_is_generic_relation_triplet("POLICY", "HEALTH", ["HEALTH", "CLIMATE", "SECURITY"]))
+
+    def test_generic_triplet_filter_keeps_grounded_policy_instrument_entities(self):
+        self.assertFalse(_is_generic_relation_triplet("ENERGY_DEPENDENCE", "KREMLIN", ["ENERGY_DEPENDENCE", "KREMLIN"]))
+
+    def test_generic_triplet_filter_flags_placeholder_policy_instrument_node(self):
+        self.assertTrue(_is_generic_relation_triplet("POLICY_INSTRUMENT", "HEALTH", ["HEALTH", "CLIMATE", "SECURITY"]))
+
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.configure")
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.LM")
     def test_dspy_extractor_prefixes_groq_models_when_groq_key_present(self, mock_lm, mock_configure):
@@ -285,6 +303,41 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_process_extraction_task_uses_ontology_labels_for_node_filtering(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-ontology-filter"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="health climate security")
+
+        class FakeExtractor:
+            async def extract_relations(self, **kwargs):
+                self.kwargs = kwargs
+                return ([], [])
+
+        extractor = FakeExtractor()
+        fake_entities = [
+            {
+                "text": "HEALTH",
+                "label": "POLICY",
+                "ontology_label": "POLICY_INSTRUMENT",
+                "confidence": 0.99,
+                "candidate_labels": ["POLICY"],
+                "backend": "gliner2",
+            }
+        ]
+
+        with patch("graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk", return_value=fake_entities):
+            await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                extractor,
+                {"extraction": {"backend": "gliner2"}},
+                ["POLICY_INSTRUMENT"],
+            )
+
+        self.assertEqual(extractor.kwargs["abstract_concepts"], ["POLICY_INSTRUMENT"])
+
     async def test_process_extraction_task_counts_gliner_entities_when_llm_returns_no_relations(self):
         ctx = PipelineContext()
         chunk_id = "chunk-1"

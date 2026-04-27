@@ -27,6 +27,36 @@ from graphgen.utils.utils import standardize_label
 
 logger = logging.getLogger(__name__)
 
+GENERIC_RELATION_ENTITY_IDS = {
+    "POLICY",
+    "POLICY_CHANGES",
+    "POLICY_INSTRUMENT",
+    "ORGANIZATION",
+    "LOCATION",
+    "EVENT",
+    "CONCEPT",
+    "PERSON",
+    "ENTITY",
+    "STATE",
+    "THING",
+}
+
+
+def _normalize_relation_candidate(value: Any) -> str:
+    return standardize_label(value) if value else ""
+
+
+def _is_generic_relation_triplet(source: str, target: str, entity_hints: List[str]) -> bool:
+    hint_set = {_normalize_relation_candidate(item) for item in (entity_hints or []) if item}
+    source_norm = _normalize_relation_candidate(source)
+    target_norm = _normalize_relation_candidate(target)
+
+    if source_norm in GENERIC_RELATION_ENTITY_IDS and source_norm not in hint_set:
+        return True
+    if target_norm in GENERIC_RELATION_ENTITY_IDS and target_norm not in hint_set:
+        return True
+    return False
+
 
 
 DEFAULT_EXTRACTION_PROMPT = ChatPromptTemplate.from_template(
@@ -295,6 +325,14 @@ class DSPyExtractor(BaseExtractor):
                         evidence = getattr(triplet, 'evidence', "")
                     
                     if source and relation and target:
+                        if _is_generic_relation_triplet(source, target, entity_hints):
+                            logger.debug(
+                                "Dropping generic DSPy triplet source=%s relation=%s target=%s",
+                                source,
+                                relation,
+                                target,
+                            )
+                            continue
                         # Standardize upstream
                         source = standardize_label(source)
                         target = standardize_label(target)

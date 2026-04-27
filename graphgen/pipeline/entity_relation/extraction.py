@@ -344,9 +344,9 @@ async def process_extraction_task(
             # Find which ontology labels were actually discovered in this chunk
             found_labels = set()
             for ent in gliner_entities:
-                label = ent.get('label')
+                label = ent.get('ontology_label') or ent.get('label')
                 if label:
-                    found_labels.add(label)
+                    found_labels.add(standardize_label(label))
                     
             # THE ONTOLOGY LABELS are filtered to only those found in this chunk
             node_labels = list(found_labels)
