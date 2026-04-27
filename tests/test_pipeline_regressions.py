@@ -285,6 +285,70 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
             diag_index = Path(tmpdir) / "diagnostics" / "diagnostic_index.json"
             self.assertTrue(diag_index.exists())
 
+    async def test_chunk_diagnostics_include_full_entity_and_relation_context(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-diag"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="Mario Draghi led Italy.")
+
+        class FakeExtractor:
+            async def extract_relations(self, **kwargs):
+                return (
+                    [("MARIO_DRAGHI", "LED", "ITALY", {"confidence": 0.9, "evidence": "Mario Draghi led Italy"})],
+                    [{"id": "MARIO_DRAGHI", "type": "PERSON", "properties": {}}, {"id": "ITALY", "type": "LOCATION", "properties": {}}],
+                )
+
+        fake_entities = [
+            {
+                "text": "MARIO_DRAGHI",
+                "label": "PERSON",
+                "ontology_label": "PERSON",
+                "confidence": 0.99,
+                "candidate_labels": ["PERSON", "LOCATION"],
+                "backend": "gliner2",
+            },
+            {
+                "text": "ITALY",
+                "label": "LOCATION",
+                "ontology_label": "LOCATION",
+                "confidence": 0.98,
+                "candidate_labels": ["PERSON", "LOCATION"],
+                "backend": "gliner2",
+            },
+        ]
+        ner_diag = {
+            "backend": "gliner2",
+            "candidate_labels": ["PERSON", "LOCATION"],
+            "raw_entities": fake_entities,
+            "entities": fake_entities,
+        }
+        config = {
+            "infra": {"output_dir": tempfile.gettempdir()},
+            "extraction": {"backend": "gliner2", "diagnostic_mode": True, "diagnostic_output_subdir": "diag-test"},
+        }
+
+        with patch("graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk", return_value=(fake_entities, ner_diag)):
+            await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                FakeExtractor(),
+                config,
+                ["PERSON", "LOCATION"],
+            )
+
+        diag_path = Path(ctx.diagnostics["chunk_diagnostics"][0])
+        payload = json.loads(diag_path.read_text())
+        self.assertIn("ner", payload)
+        self.assertIn("raw_entities", payload["ner"])
+        self.assertIn("entities", payload["ner"])
+        self.assertIn("relation_eligible_entities", payload)
+        self.assertIn("raw_relations", payload)
+        self.assertIn("raw_nodes", payload)
+        self.assertIn("accepted_relations", payload)
+        self.assertIn("accepted_nodes", payload)
+        self.assertEqual(payload["accepted_relations"][0][0], "MARIO_DRAGHI")
+
     async def test_segment_diagnostics_include_final_entities_and_relations(self):
         ctx = PipelineContext(graph=nx.DiGraph())
         segment_id = "SEG_1"

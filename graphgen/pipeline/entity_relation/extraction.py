@@ -398,12 +398,15 @@ async def process_extraction_task(
             discovered_entities = []
             if task.entities:
                 discovered_entities.extend(task.entities)
+            relation_eligible_entities = _build_relation_eligible_entities(gliner_entities) if gliner_entities else []
             if gliner_entities:
-                discovered_entities.extend(_build_relation_eligible_entities(gliner_entities))
+                discovered_entities.extend(relation_eligible_entities)
             
             # Deduplicate Discoveries
             discovered_entities = list(dict.fromkeys(discovered_entities))
 
+            chunk_diag_payload = None
+            chunk_diag_path = None
             if diagnostics_enabled(config):
                 chunk_diag_payload = {
                     'chunk_id': task.chunk_id,
@@ -414,10 +417,9 @@ async def process_extraction_task(
                     'ner': ner_diagnostics,
                     'found_labels': sorted(found_labels),
                     'node_labels': node_labels,
+                    'relation_eligible_entities': relation_eligible_entities,
                     'discovered_entities': sorted(discovered_entities),
                 }
-                diag_path = write_diagnostic_json(config, f'extraction_chunk_{task.chunk_id}', chunk_diag_payload)
-                deps.diagnostics.setdefault('chunk_diagnostics', []).append(diag_path)
             
             # Run LLM Relation Extraction
             raw_relations, raw_nodes = await extract_relations_with_llm_async(
@@ -427,6 +429,16 @@ async def process_extraction_task(
                 entities=discovered_entities, 
                 abstract_concepts=node_labels 
             )
+
+            if chunk_diag_payload is not None:
+                chunk_diag_payload.update({
+                    'raw_relations': raw_relations,
+                    'raw_nodes': raw_nodes,
+                    'accepted_relations': raw_relations,
+                    'accepted_nodes': raw_nodes,
+                })
+                chunk_diag_path = write_diagnostic_json(config, f'extraction_chunk_{task.chunk_id}', chunk_diag_payload)
+                deps.diagnostics.setdefault('chunk_diagnostics', []).append(chunk_diag_path)
             
             chunk_data = {
                 'knowledge_triplets': raw_relations,
@@ -440,6 +452,7 @@ async def process_extraction_task(
                 chunk_data['diagnostic_snapshot'] = {
                     'found_labels': sorted(found_labels),
                     'node_labels': node_labels,
+                    'relation_eligible_entities': relation_eligible_entities,
                     'discovered_entities': sorted(discovered_entities),
                     'raw_relations': raw_relations,
                     'raw_nodes': raw_nodes,
