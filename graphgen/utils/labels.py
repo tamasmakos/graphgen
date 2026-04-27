@@ -43,8 +43,9 @@ def resolve_entity_labels(extraction_config: Dict[str, Any]) -> List[str]:
     if hasattr(extraction_config, 'model_dump'):
         extraction_config = extraction_config.model_dump()
     
-    # Get manual labels
-    manual_labels = extraction_config.get('entity_labels') or extraction_config.get('gliner_labels', [])
+    # Get manual labels. If none are provided, keep a curated default seed so
+    # ontology-only runs still preserve core extraction categories like PERSON and EVENT.
+    manual_labels = extraction_config.get('entity_labels') or extraction_config.get('gliner_labels') or DEFAULT_LABELS
     
     # Check ontology configuration
     ontology_config = extraction_config.get('ontology', {})

@@ -9,12 +9,14 @@ import os
 import asyncio
 import uuid
 import logging
-from datetime import datetime
+from datetime import date, datetime
+import json
 import networkx as nx
+from copy import deepcopy
 from typing import Dict, Any, List
 
-from graphgen.data_types import PipelineContext
 from graphgen.config.settings import PipelineSettings
+from graphgen.data_types import PipelineContext
 from graphgen.utils.graphdb.neo4j_adapter import Neo4jGraphUploader
 from graphgen.pipeline.lexical_graph_building.builder import build_lexical_graph
 from graphgen.pipeline.entity_relation.extraction import extract_all_entities_relations
@@ -88,6 +90,7 @@ class KnowledgePipeline:
         # Convert settings to dict for legacy functions
         # TODO: Refactor downstream functions to accept PipelineSettings object directly
         config_dict = self.settings.model_dump() if hasattr(self.settings, 'model_dump') else self.settings.dict()
+        ctx.stats['pipeline_config'] = config_dict
         
         try:
             # 1. Build Lexical Graph
@@ -162,9 +165,9 @@ class KnowledgePipeline:
         
         # Basic check via uploader connectivity
         if self.uploader and not self.uploader.connect():
-            error_msg = "Preflight check failed: Neo4j is not reachable."
-            logger.critical(f"{error_msg} Aborting pipeline.")
-            raise ConnectionError(error_msg)
+            logger.warning("Preflight check failed: Neo4j is not reachable. Continuing without uploader.")
+            self.uploader = None
+            return
         if self.uploader:
             self.uploader.close() # Close after check
 
@@ -197,6 +200,7 @@ class KnowledgePipeline:
         try:
             from graphgen.pipeline.embeddings.rag import generate_rag_embeddings
             from graphgen.pipeline.graph_cleaning.resolution import resolve_entities_semantically
+            from graphgen.evaluation import summarize_entity_resolution_effects
             
             logger.debug("Step 3: Semantic Enrichment")
             
@@ -204,10 +208,28 @@ class KnowledgePipeline:
             generate_rag_embeddings(ctx.graph)
             
             logger.info("  3.2: Semantic Resolution...")
-            logger.info("  3.2: Semantic Resolution...")
+            graph_before_resolution = deepcopy(ctx.graph)
             resolution_stats = resolve_entities_semantically(ctx.graph)
+            resolution_eval = summarize_entity_resolution_effects(graph_before_resolution, ctx.graph)
+            resolution_stats['evaluation'] = resolution_eval
             ctx.stats['entity_resolution'] = resolution_stats
             logger.info(f"Resolution Stats: {resolution_stats}")
+
+            extraction_cfg = ctx.stats.get('pipeline_config', {}).get('extraction', {})
+            if getattr(extraction_cfg, 'get', None) and extraction_cfg.get('diagnostic_mode'):
+                diagnostics_dir = os.path.join(
+                    self.settings.infra.output_dir,
+                    extraction_cfg.get('diagnostic_output_subdir', 'diagnostics')
+                )
+                create_output_directory(diagnostics_dir)
+                diagnostics_path = os.path.join(diagnostics_dir, 'entity_resolution_diagnostics.json')
+                payload = {
+                    'entity_resolution': resolution_stats,
+                    'evaluation': resolution_eval,
+                }
+                with open(diagnostics_path, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, indent=2, ensure_ascii=False)
+                ctx.diagnostics['entity_resolution_diagnostics'] = diagnostics_path
             
         except Exception as e:
             logger.error(f"Semantic enrichment failed: {e}")
@@ -356,6 +378,14 @@ class KnowledgePipeline:
             with open(er_report_path, 'w') as f:
                 json.dump(er_stats, f, indent=2)
             logger.info(f"Entity Resolution Report saved to {er_report_path}")
+
+            if ctx.diagnostics:
+                diagnostics_dir = os.path.join(output_dir, "diagnostics")
+                create_output_directory(diagnostics_dir)
+                diagnostics_path = os.path.join(diagnostics_dir, "diagnostic_index.json")
+                with open(diagnostics_path, 'w') as f:
+                    json.dump(ctx.diagnostics, f, indent=2)
+                logger.info(f"Diagnostic index saved to {diagnostics_path}")
         except Exception as e:
             logger.error(f"Failed to save artifacts: {e}")
             ctx.add_error("artifacts", str(e))

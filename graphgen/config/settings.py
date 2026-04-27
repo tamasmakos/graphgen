@@ -11,7 +11,7 @@ Usage:
 """
 
 from typing import List, Optional, Dict, Any
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from graphgen.config.schema import get_default_schema
 
@@ -107,17 +107,36 @@ class ExtractionSettings(BaseSettings):
     # Text Splitting
     chunk_size: int = 1200
     chunk_overlap: int = 100
-    
-    # Extraction Backend preference
-    backend: str = "llm"  # options: "gliner", "spacy", "llm"
-    
+
+    # Backend selection
+    ner_backend: str = "llm"  # options: "gliner", "gliner2", "spacy", "llm", "dspy"
+    relation_backend: Optional[str] = None  # options: "dspy", "langchain"
+
+    # Legacy alias retained for backward compatibility with existing YAML/configs.
+    @property
+    def backend(self) -> str:
+        return self.ner_backend
+
     # GLiNER Configuration
     gliner_model: str = "knowledgator/gliner-multitask-large-v0.5"
     gliner_threshold: float = 0.5
+    gliner2_top_k_labels: int = 5
+    gliner2_label_descriptions: Dict[str, str] = Field(default_factory=dict)
     device: str = "auto" # "auto", "cuda", "cpu"
     use_onnx: bool = False
     # Entity labels (used by GLiNER, Spacy hints, and LLM categories)
     entity_labels: List[str] = Field(default_factory=list, alias="gliner_labels")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_backend_fields(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            if values.get("ner_backend") is None and values.get("backend") is not None:
+                values["ner_backend"] = values["backend"]
+            ner_backend = values.get("ner_backend", "llm")
+            if values.get("relation_backend") is None:
+                values["relation_backend"] = "langchain" if ner_backend == "llm" else "dspy"
+        return values
 
     @field_validator("entity_labels", mode="before")
     @classmethod
@@ -127,16 +146,20 @@ class ExtractionSettings(BaseSettings):
         if isinstance(v, list):
             return [str(item) for item in v]
         return []
-    
+
     # Ontology-based label extraction
     ontology: OntologySettings = Field(default_factory=OntologySettings)
-    
+
     # Spacy Configuration
     spacy_model: str = "en_core_web_lg"
-    
+
     # Performance
     max_concurrent_chunks: int = 8
-    
+
+    # Diagnostics
+    diagnostic_mode: bool = False
+    diagnostic_output_subdir: str = "diagnostics"
+
     # File Selection (for incremental/selective processing)
     file_pattern: str = Field("*.txt", alias="EXTRACTION_FILE_PATTERN")
 

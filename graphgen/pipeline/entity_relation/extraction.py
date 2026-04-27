@@ -10,18 +10,48 @@ import torch
 # --- Graphgen Imports ---
 from graphgen.data_types import PipelineContext, ChunkExtractionTask
 from graphgen.pipeline.entity_relation.extractors import BaseExtractor, get_extractor
+from graphgen.evaluation import summarize_entity_resolution_effects
+from graphgen.pipeline.graph_cleaning.canonicalization import classify_surface_form
+from graphgen.pipeline.graph_cleaning.canonicalization import normalize_surface_form
+from graphgen.prototype_gliner2_ontology import (
+    build_top_level_label_space,
+    build_gliner2_schema,
+    refine_entities_with_ontology,
+    select_candidate_labels,
+)
 from graphgen.utils.utils import standardize_label
 # We assume resolution is in graph_cleaning as previously found
 from graphgen.pipeline.graph_cleaning.resolution import resolve_extraction_coreferences
+from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
 
 # --- GLiNER Helper ---
 from gliner import GLiNER
+from gliner2 import GLiNER2
 import spacy
 
 logger = logging.getLogger(__name__)
 
 GLINER_MODEL = None
+GLINER2_MODEL = None
 SPACY_MODEL = None
+
+def get_gliner2_model(config: Optional[Dict[str, Any]] = None):
+    global GLINER2_MODEL
+    if GLINER2_MODEL is None:
+        try:
+            model_name = "fastino/gliner2-base-v1"
+            if config:
+                extraction_cfg = config.get('extraction', {})
+                if hasattr(extraction_cfg, 'model_dump'):
+                    extraction_cfg = extraction_cfg.model_dump()
+                model_name = extraction_cfg.get('gliner_model', model_name)
+            logger.info(f"Loading GLiNER2 model ({model_name})...")
+            GLINER2_MODEL = GLiNER2.from_pretrained(model_name)
+            logger.info("GLiNER2 model loaded.")
+        except Exception as e:
+            logger.error(f"Failed to load GLiNER2: {e}")
+            return None
+    return GLINER2_MODEL
 
 def get_gliner_model(config: Optional[Dict[str, Any]] = None):
     global GLINER_MODEL
@@ -128,34 +158,49 @@ async def extract_relations_with_llm_async(
     keywords: List[str] = None,
     entities: List[str] = None,
     abstract_concepts: List[str] = None
-) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]]]:
+) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]], Dict[str, Any]]:
     """Extract relations using configured extractor."""
     if not extractor or not text:
-        return [], []
+        return [], [], {}
 
     try:
-        return await extractor.extract_relations(
+        result = await extractor.extract_relations(
             text=text,
             keywords=keywords,
             entities=entities,
             abstract_concepts=abstract_concepts
         )
+        if isinstance(result, tuple):
+            if len(result) == 3:
+                relations, nodes, diagnostics = result
+                return relations or [], nodes or [], diagnostics or {}
+            if len(result) == 2:
+                relations, nodes = result
+                return relations or [], nodes or [], {}
+        logger.warning("Extractor returned unexpected result shape; treating as empty extraction")
+        return [], [], {}
     except Exception as e:
         logger.error(f"Extraction failed: {str(e)}")
-        return [], []
+        return [], [], {}
 
 
 async def _extract_entities_for_chunk(
     text: str, 
     config: Dict[str, Any],
-    labels: List[str]
-) -> List[Dict[str, Any]]:
-    """Run NER (GLiNER or Spacy) for a single chunk."""
+    labels: List[str],
+    return_diagnostics: bool = False,
+) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Run NER (GLiNER, GLiNER2, or Spacy) for a single chunk."""
     extraction_config = config.get('extraction', {})
     if hasattr(extraction_config, 'model_dump'):
         extraction_config = extraction_config.model_dump()
         
-    extraction_backend = extraction_config.get('backend', 'gliner')
+    extraction_backend = extraction_config.get('ner_backend') or extraction_config.get('backend', 'gliner')
+    diagnostics: Dict[str, Any] = {
+        'backend': extraction_backend,
+        'label_count': len(labels),
+        'label_sample': labels[:20],
+    }
     
     if extraction_backend == 'spacy':
         try:
@@ -164,14 +209,74 @@ async def _extract_entities_for_chunk(
             if nlp:
                 # Run spacy in thread to avoid blocking loop
                 doc = await asyncio.to_thread(nlp, text)
-                return [{
+                entities = [{
                     "text": standardize_label(ent.text),
-                    "label": standardize_label(ent.label_)
+                    "label": standardize_label(ent.label_),
+                    "ontology_label": standardize_label(ent.label_),
+                    "confidence": 1.0,
+                    "candidate_labels": labels,
                 } for ent in doc.ents]
+                diagnostics['entities'] = entities
+                return (entities, diagnostics) if return_diagnostics else entities
         except Exception as e:
             logger.error(f"Spacy extraction failed for chunk: {e}")
             return []
-            
+    elif extraction_backend == 'gliner2':
+        try:
+            if not labels:
+                logger.warning("No labels provided for GLiNER2 extraction. Skipping inference.")
+                return []
+
+            label_space = build_top_level_label_space(labels)
+            top_k = extraction_config.get('gliner2_top_k_labels', 5)
+            candidate_labels = select_candidate_labels(text, label_space, top_k=top_k)
+            schema = build_gliner2_schema(candidate_labels, extraction_config.get('gliner2_label_descriptions'))
+            diagnostics.update({
+                'candidate_labels': candidate_labels,
+                'label_space_summary': {
+                    key: value.get('children', [])
+                    for key, value in label_space.items()
+                },
+                'schema': schema,
+                'threshold': extraction_config.get('gliner_threshold', 0.5),
+            })
+            model = get_gliner2_model(config)
+            if not model:
+                return []
+
+            threshold = extraction_config.get('gliner_threshold', 0.5)
+            result = await asyncio.to_thread(
+                model.extract,
+                text,
+                schema,
+                threshold,
+                True,
+                True,
+                True,
+            )
+
+            flat_entities = []
+            for label, spans in (result.get('entities') or {}).items():
+                for span in spans:
+                    entity = {
+                        'text': standardize_label(span.get('text', '')),
+                        'label': standardize_label(label),
+                        'ontology_label': standardize_label(label),
+                        'confidence': float(span.get('confidence', 0.0)),
+                        'start': span.get('start'),
+                        'end': span.get('end'),
+                        'candidate_labels': candidate_labels,
+                        'backend': 'gliner2',
+                    }
+                    flat_entities.append(entity)
+
+            refined_entities = refine_entities_with_ontology(flat_entities, label_space)
+            diagnostics['raw_entities'] = flat_entities
+            diagnostics['entities'] = refined_entities
+            return (refined_entities, diagnostics) if return_diagnostics else refined_entities
+        except Exception as e:
+            logger.error(f"GLiNER2 extraction failed for chunk: {e}")
+            return []
     else:
         # GLiNER Default
         try:
@@ -199,9 +304,19 @@ async def _extract_entities_for_chunk(
                 )
                 
                 predictions = await asyncio.to_thread(predict_func)
+                flat_predictions = []
+                for batch in predictions or []:
+                    if isinstance(batch, list):
+                        flat_predictions.extend(batch)
+                    elif isinstance(batch, dict):
+                        flat_predictions.append(batch)
                 return [{
                     "text": standardize_label(item.get('text', '')),
-                    "label": standardize_label(item.get('label', ''))
+                    "label": standardize_label(item.get('label', '')),
+                    "ontology_label": standardize_label(item.get('label', '')),
+                    "confidence": float(item.get('score', item.get('confidence', 0.0)) or 0.0),
+                    "candidate_labels": labels,
+                    "backend": 'gliner'
                 } for item in flat_predictions]
                 
         except Exception as e:
@@ -209,6 +324,54 @@ async def _extract_entities_for_chunk(
             return []
 
     return []
+
+
+def _build_relation_eligible_entities(gliner_entities: List[Dict[str, Any]]) -> List[str]:
+    eligible = []
+    fallback = []
+
+    for entity in gliner_entities or []:
+        text = standardize_label(entity.get('text', ''))
+        ontology_label = standardize_label(entity.get('ontology_label') or entity.get('label', ''))
+        confidence = float(entity.get('confidence', 0.0) or 0.0)
+
+        if not text:
+            continue
+
+        fallback.append(text)
+
+        if len(text) <= 3 and '_' not in text and ontology_label in {'PERSON', 'ORGANIZATION', 'LOCATION'}:
+            continue
+        if ontology_label == 'PERSON' and '_' not in text:
+            continue
+        if ontology_label == 'EVENT' and confidence < 0.5:
+            continue
+        if ontology_label == 'ORGANIZATION' and confidence < 0.6:
+            continue
+        if ontology_label == 'LOCATION' and confidence < 0.6:
+            continue
+
+        eligible.append(text)
+
+    deduped_eligible = list(dict.fromkeys(eligible))
+    if deduped_eligible:
+        return deduped_eligible
+    return list(dict.fromkeys(fallback))
+
+def _build_entity_surface_metadata(gliner_entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    metadata = []
+    for entity in gliner_entities or []:
+        text = entity.get('text', '')
+        metadata.append({
+            'text': text,
+            'canonical_form': normalize_surface_form(text),
+            'surface_form_class': classify_surface_form(text),
+            'ontology_label': entity.get('ontology_label') or entity.get('label'),
+            'confidence': entity.get('confidence'),
+            'merge_candidate': classify_surface_form(text) == 'named_entity',
+        })
+    return metadata
+
 
 async def process_extraction_task(
     deps: PipelineContext,
@@ -226,15 +389,24 @@ async def process_extraction_task(
         try:
             # 1. Run NER for this chunk (GLiNER/Spacy)
             # This is now done in parallel with other chunks' NER/LLM steps
-            gliner_entities = await _extract_entities_for_chunk(task.chunk_text, config, ontology_labels)
+            if diagnostics_enabled(config):
+                gliner_entities, ner_diagnostics = await _extract_entities_for_chunk(
+                    task.chunk_text,
+                    config,
+                    ontology_labels,
+                    return_diagnostics=True,
+                )
+            else:
+                gliner_entities = await _extract_entities_for_chunk(task.chunk_text, config, ontology_labels)
+                ner_diagnostics = None
             
             # 2. Prepare allowed nodes/types for LLM (Gatekeeper Logic)
             # Find which ontology labels were actually discovered in this chunk
             found_labels = set()
             for ent in gliner_entities:
-                label = ent.get('label')
+                label = ent.get('ontology_label') or ent.get('label')
                 if label:
-                    found_labels.add(label)
+                    found_labels.add(standardize_label(label))
                     
             # THE ONTOLOGY LABELS are filtered to only those found in this chunk
             node_labels = list(found_labels)
@@ -253,21 +425,53 @@ async def process_extraction_task(
             discovered_entities = []
             if task.entities:
                 discovered_entities.extend(task.entities)
+            relation_eligible_entities = _build_relation_eligible_entities(gliner_entities) if gliner_entities else []
             if gliner_entities:
-                gliner_texts = [e.get('text') for e in gliner_entities if e.get('text')]
-                discovered_entities.extend(gliner_texts)
+                discovered_entities.extend(relation_eligible_entities)
             
             # Deduplicate Discoveries
-            discovered_entities = list(set(discovered_entities))
+            discovered_entities = list(dict.fromkeys(discovered_entities))
+
+            entity_surface_metadata = _build_entity_surface_metadata(gliner_entities)
+
+            chunk_diag_payload = None
+            chunk_diag_path = None
+            if diagnostics_enabled(config):
+                chunk_diag_payload = {
+                    'chunk_id': task.chunk_id,
+                    'chunk_text': task.chunk_text,
+                    'keywords': task.keywords,
+                    'task_entities': task.entities,
+                    'ontology_labels': ontology_labels,
+                    'ner': ner_diagnostics,
+                    'entity_surface_metadata': entity_surface_metadata,
+                    'found_labels': sorted(found_labels),
+                    'node_labels': node_labels,
+                    'relation_eligible_entities': relation_eligible_entities,
+                    'discovered_entities': sorted(discovered_entities),
+                }
             
             # Run LLM Relation Extraction
-            raw_relations, raw_nodes = await extract_relations_with_llm_async(
+            raw_relations, raw_nodes, relation_diagnostics = await extract_relations_with_llm_async(
                 text=task.chunk_text,
                 extractor=extractor,
                 keywords=task.keywords,
                 entities=discovered_entities, 
                 abstract_concepts=node_labels 
             )
+
+            if chunk_diag_payload is not None:
+                chunk_diag_payload.update({
+                    'raw_relations': raw_relations,
+                    'raw_nodes': raw_nodes,
+                    'accepted_relations': raw_relations,
+                    'accepted_nodes': raw_nodes,
+                    'relation_decisions': relation_diagnostics.get('triplet_decisions', []),
+                    'raw_triplets': relation_diagnostics.get('raw_triplets', []),
+                    'relation_diagnostics_available': bool(relation_diagnostics),
+                })
+                chunk_diag_path = write_diagnostic_json(config, f'extraction_chunk_{task.chunk_id}', chunk_diag_payload)
+                deps.diagnostics.setdefault('chunk_diagnostics', []).append(chunk_diag_path)
             
             chunk_data = {
                 'knowledge_triplets': raw_relations,
@@ -277,11 +481,27 @@ async def process_extraction_task(
                 },
                 'gliner_entities': gliner_entities
             }
+            if diagnostics_enabled(config):
+                chunk_data['diagnostic_snapshot'] = {
+                    'found_labels': sorted(found_labels),
+                    'node_labels': node_labels,
+                    'entity_surface_metadata': entity_surface_metadata,
+                    'relation_eligible_entities': relation_eligible_entities,
+                    'discovered_entities': sorted(discovered_entities),
+                    'raw_relations': raw_relations,
+                    'raw_nodes': raw_nodes,
+                }
             deps.graph.nodes[task.chunk_id].update(chunk_data)
             
-            deps.graph.nodes[task.chunk_id]['extraction_successful'] = bool(raw_relations)
+            unique_relation_entities = {
+                x for tr in raw_relations for x in (tr[0], tr[2]) if x
+            }
+            unique_gliner_entities = {
+                e.get('text') for e in gliner_entities if e.get('text')
+            }
             rel_count = len(raw_relations)
-            ent_count = len(set([x for tr in raw_relations for x in (tr[0], tr[2])])) if raw_relations else 0
+            ent_count = len(unique_relation_entities or unique_gliner_entities)
+            deps.graph.nodes[task.chunk_id]['extraction_successful'] = bool(raw_relations or gliner_entities)
             logger.debug(f"      Completed {task.chunk_id}: stored {ent_count} entities, {rel_count} relations")
             
             return {
@@ -328,10 +548,12 @@ async def extract_all_entities_relations(deps: PipelineContext, config: Dict[str
     logger.info(f"Using {len(labels)} entity labels for extraction pipeline. Processing {len(unique_tasks)} chunks in parallel...")
 
     # Preload NER model to prevent race conditions in parallel threads
-    extraction_backend = extraction_cfg.get('backend', 'gliner')
+    extraction_backend = extraction_cfg.get('ner_backend') or extraction_cfg.get('backend', 'gliner')
     if extraction_backend == 'spacy':
         spacy_model_name = extraction_cfg.get('spacy_model', 'en_core_web_lg')
         get_spacy_model(spacy_model_name)
+    elif extraction_backend == 'gliner2':
+        get_gliner2_model(config)
     else:
         get_gliner_model(config)
 
@@ -429,9 +651,10 @@ async def add_triplets_to_graph_for_segment(
         # Classify entity using LLM type map or GLiNER map
         # LLM type is highly reliable now as it follows ontology strict_mode
         llm_type = llm_type_map.get(mapped_ent)
-        gliner_label = gliner_label_map.get(mapped_ent)
-        if not gliner_label:
-            gliner_label = gliner_label_map.get(mapped_ent.lower())
+        gliner_label_entry = gliner_label_map.get(mapped_ent)
+        if not gliner_label_entry:
+            gliner_label_entry = gliner_label_map.get(mapped_ent.lower())
+        gliner_label = gliner_label_entry.get('label') if isinstance(gliner_label_entry, dict) else gliner_label_entry
             
         # Use LLM type if available, fallback to GLiNER/Spacy, then default
         ontology_label = llm_type or gliner_label or "Concept"
@@ -534,9 +757,20 @@ async def enrich_graph_per_segment(deps: PipelineContext) -> Dict[str, Any]:
                 # Populate GLiNER map
                 for entity in gliner_entities:
                     text = standardize_label(entity.get('text', ''))
-                    label = standardize_label(entity.get('label', ''))
-                    if text and label:
-                        gliner_label_map[text] = label
+                    ontology_label = standardize_label(entity.get('ontology_label') or entity.get('label', ''))
+                    if text and ontology_label:
+                        current = gliner_label_map.get(text)
+                        current_conf = 0.0 if not isinstance(current, dict) else float(current.get('confidence', 0.0) or 0.0)
+                        new_conf = float(entity.get('confidence', 0.0) or 0.0)
+                        if current is None or new_conf >= current_conf:
+                            gliner_label_map[text] = {
+                                'label': ontology_label,
+                                'confidence': new_conf,
+                                'backend': entity.get('backend'),
+                                'start': entity.get('start'),
+                                'end': entity.get('end'),
+                                'candidate_labels': entity.get('candidate_labels', []),
+                            }
                 
                 entities_in_chunk = set()
                 for (h, r, t, _) in raw_relations:
@@ -565,6 +799,22 @@ async def enrich_graph_per_segment(deps: PipelineContext) -> Dict[str, Any]:
             coref_result = resolve_extraction_coreferences(aggregated_relations, list(all_entities))
             cleaned_relations = coref_result.get('cleaned_relations', [])
             entity_mappings = coref_result.get('entity_mappings', {})
+
+            if graph.nodes.get(segment_id, {}).get('diagnostic_snapshot') is None:
+                graph.nodes[segment_id]['diagnostic_snapshot'] = {}
+            segment_diag = None
+            if diagnostics_enabled(deps.stats.get('pipeline_config', {})):
+                segment_diag = {
+                    'segment_id': segment_id,
+                    'chunk_ids': chunk_ids,
+                    'aggregated_relations': aggregated_relations,
+                    'all_entities': sorted(all_entities),
+                    'chunk_entity_map': {k: sorted(v) for k, v in chunk_entity_map.items()},
+                    'gliner_label_map': gliner_label_map,
+                    'coref_result': coref_result,
+                    'cleaned_relations': cleaned_relations,
+                    'entity_mappings': entity_mappings,
+                }
             
             # Build LLM type map
             llm_type_map = {}
@@ -595,6 +845,39 @@ async def enrich_graph_per_segment(deps: PipelineContext) -> Dict[str, Any]:
                 gliner_label_map=gliner_label_map, # Pass the map
                 llm_type_map=canonical_llm_type_map
             )
+
+            if diagnostics_enabled(deps.stats.get('pipeline_config', {})):
+                final_entities = []
+                final_relations = []
+                entity_ids = set(entity_mappings.values())
+                for node_id in entity_ids:
+                    if graph.has_node(node_id):
+                        node_data = graph.nodes[node_id]
+                        final_entities.append({
+                            'id': node_id,
+                            'name': node_data.get('name', node_id),
+                            'node_type': node_data.get('node_type'),
+                            'ontology_class': node_data.get('ontology_class'),
+                            'llm_type': node_data.get('llm_type'),
+                            'graph_type': node_data.get('graph_type'),
+                        })
+                for source, target, edge_data in graph.edges(data=True):
+                    if edge_data.get('graph_type') == 'entity_relation' and edge_data.get('segment_id') == segment_id:
+                        final_relations.append({
+                            'source': source,
+                            'target': target,
+                            'label': edge_data.get('label'),
+                            'relation_type': edge_data.get('relation_type'),
+                            'properties': {
+                                key: value
+                                for key, value in edge_data.items()
+                                if key not in {'label', 'relation_type', 'graph_type', 'segment_id', 'source'}
+                            },
+                        })
+                segment_diag['final_entities'] = sorted(final_entities, key=lambda item: item['id'])
+                segment_diag['final_relations'] = sorted(final_relations, key=lambda item: (item['source'], item['label'], item['target']))
+                diag_path = write_diagnostic_json(deps.stats['pipeline_config'], f'segment_{segment_id}', segment_diag)
+                deps.diagnostics.setdefault('segment_diagnostics', []).append(diag_path)
             
             segments_processed += 1
         except Exception as e:

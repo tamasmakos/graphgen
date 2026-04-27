@@ -17,7 +17,8 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 
-from graphgen.config.llm import get_langchain_llm
+from graphgen.config.llm import _extract_secret
+from graphgen.config.llm import normalize_groq_model
 from graphgen.pipeline.entity_relation.dspy_module import GraphExtractorModule
 import dspy
 import os
@@ -27,8 +28,83 @@ from graphgen.utils.utils import standardize_label
 logger = logging.getLogger(__name__)
 
 
+def _normalize_relation_candidate(value: Any) -> str:
+    return standardize_label(value) if value else ""
+
+
+def _candidate_grounded_in_evidence(candidate: str, evidence: str) -> bool:
+    candidate_norm = _normalize_relation_candidate(candidate)
+    evidence_norm = _normalize_relation_candidate(evidence)
+    if not candidate_norm or not evidence_norm:
+        return False
+    return f"_{candidate_norm}_" in f"_{evidence_norm}_"
+
+
+def _endpoint_matches_hint(endpoint: str, entity_hints: List[str]) -> bool:
+    endpoint_norm = _normalize_relation_candidate(endpoint)
+    if not endpoint_norm:
+        return False
+
+    endpoint_tokens = {token for token in endpoint_norm.split('_') if len(token) > 2}
+    for hint in entity_hints or []:
+        hint_norm = _normalize_relation_candidate(hint)
+        if not hint_norm:
+            continue
+        if endpoint_norm == hint_norm:
+            return True
+        if hint_norm in endpoint_norm or endpoint_norm in hint_norm:
+            return True
+
+        hint_tokens = {token for token in hint_norm.split('_') if len(token) > 2}
+        overlap = endpoint_tokens & hint_tokens
+        if overlap and (len(overlap) >= 2 or len(endpoint_tokens) == 1 or len(hint_tokens) == 1):
+            return True
+
+    return False
+
+
+def _is_grounded_relation_endpoint(
+    endpoint: str,
+    entity_hints: List[str],
+    ontology_classes: List[str],
+    evidence: str,
+) -> bool:
+    endpoint_norm = _normalize_relation_candidate(endpoint)
+    if not endpoint_norm:
+        return False
+
+    if _endpoint_matches_hint(endpoint, entity_hints):
+        return True
+
+    if _candidate_grounded_in_evidence(endpoint, evidence):
+        return True
+
+    ontology_set = {_normalize_relation_candidate(item) for item in (ontology_classes or []) if item}
+    if endpoint_norm in ontology_set:
+        return False
+
+    return False
+
+
+def _is_ungrounded_relation_triplet(
+    source: str,
+    target: str,
+    entity_hints: List[str],
+    ontology_classes: List[str],
+    evidence: str,
+) -> bool:
+    return not (
+        _is_grounded_relation_endpoint(source, entity_hints, ontology_classes, evidence)
+        and _is_grounded_relation_endpoint(target, entity_hints, ontology_classes, evidence)
+    )
+
+
+def _relation_endpoints_in_hints(source: str, target: str, entity_hints: List[str]) -> bool:
+    return _endpoint_matches_hint(source, entity_hints) and _endpoint_matches_hint(target, entity_hints)
+
 
 DEFAULT_EXTRACTION_PROMPT = ChatPromptTemplate.from_template(
+
     """You are an expert at extracting knowledge graph entities and relationships from text.    
     Text:
     {input}
@@ -196,30 +272,19 @@ class DSPyExtractor(BaseExtractor):
     def __init__(self, config: Dict[str, Any]):
         """Initialize with config."""
         self.config = config
-        
+
         # Configure DSPy with the LLM from config
         llm_config = config.get('llm', {})
         # Flatten if it's a pydantic model dump
         if hasattr(llm_config, 'model_dump'):
             llm_config = llm_config.model_dump()
-            
+
         # Try to find the best model name from config
         model = llm_config.get('extraction_model') or llm_config.get('base_model') or llm_config.get('model') or 'gpt-4o'
-        
+
         # Check for Groq API Key
-        groq_api_key = None
         infra_config = config.get('infra', {})
-        if hasattr(infra_config, 'model_dump'):
-            infra_config = infra_config.model_dump()
-            
-        # Try to get key from infra config or direct LLM config or env
-        val = infra_config.get('groq_api_key') or llm_config.get('groq_api_key')
-        if val:
-             if hasattr(val, 'get_secret_value'):
-                 groq_api_key = val.get_secret_value()
-             else:
-                 groq_api_key = str(val)
-        
+        groq_api_key = _extract_secret(infra_config, 'groq_api_key') or _extract_secret(llm_config, 'groq_api_key')
         if not groq_api_key:
             groq_api_key = os.environ.get('GROQ_API_KEY')
 
@@ -228,9 +293,10 @@ class DSPyExtractor(BaseExtractor):
              if groq_api_key:
                  # Configure for Groq using OpenAI compatibility
                  logger.info(f"Configuring DSPy for Groq with model {model}")
+                 groq_model = normalize_groq_model(model)
                  lm = dspy.LM(
-                     model=model, 
-                     api_key=groq_api_key, 
+                     model=groq_model,
+                     api_key=groq_api_key,
                      api_base="https://api.groq.com/openai/v1",
                      temperature=0.0,
                      max_tokens=2048
@@ -238,22 +304,22 @@ class DSPyExtractor(BaseExtractor):
                  dspy.configure(lm=lm)
              else:
                  # Fallback to OpenAI or other default
-                 api_key = llm_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
+                 api_key = _extract_secret(llm_config, 'api_key') or os.environ.get('OPENAI_API_KEY')
                  base_url = llm_config.get('base_url')
                  lm = dspy.LM(
-                     model=model, 
-                     api_key=api_key, 
+                     model=model,
+                     api_key=api_key,
                      api_base=base_url,
                      temperature=0.0,
                      max_tokens=2048
                  )
                  dspy.configure(lm=lm)
-                 
+
         except Exception as e:
              logger.warning(f"Failed to configure DSPy LM: {e}")
              # Fallback or already configured
              pass
-        
+
         self.module = GraphExtractorModule()
         logger.info(f"Initialized DSPy extractor with model {model}")
 
@@ -283,6 +349,8 @@ class DSPyExtractor(BaseExtractor):
             relations = []
             nodes_data = []
             seen_nodes = set()
+            raw_triplets = []
+            triplet_decisions = []
             
             # triplets is expected to be a list of Triplet objects (pydantic models)
             if triplets:
@@ -294,65 +362,134 @@ class DSPyExtractor(BaseExtractor):
                         target = triplet.get('target')
                         source_type = triplet.get('source_type')
                         target_type = triplet.get('target_type')
+                        confidence = triplet.get('confidence', 1.0)
+                        evidence = triplet.get('evidence', "")
                     else:
                         source = getattr(triplet, 'source', None)
                         relation = getattr(triplet, 'relation', None)
                         target = getattr(triplet, 'target', None)
                         source_type = getattr(triplet, 'source_type', None)
                         target_type = getattr(triplet, 'target_type', None)
-                    
-                        source_type = getattr(triplet, 'source_type', None)
-                        target_type = getattr(triplet, 'target_type', None)
                         confidence = getattr(triplet, 'confidence', 1.0)
                         evidence = getattr(triplet, 'evidence', "")
+
+                    raw_triplet = {
+                        "source": source,
+                        "relation": relation,
+                        "target": target,
+                        "source_type": source_type,
+                        "target_type": target_type,
+                        "confidence": confidence,
+                        "evidence": evidence,
+                    }
+                    raw_triplets.append(raw_triplet)
+
+                    if not (source and relation and target):
+                        triplet_decisions.append({
+                            **raw_triplet,
+                            "kept": False,
+                            "drop_reason": "missing_triplet_field",
+                            "source_matches_hint": _endpoint_matches_hint(source, entity_hints),
+                            "target_matches_hint": _endpoint_matches_hint(target, entity_hints),
+                            "source_grounded": _is_grounded_relation_endpoint(source, entity_hints, ontology_classes, evidence),
+                            "target_grounded": _is_grounded_relation_endpoint(target, entity_hints, ontology_classes, evidence),
+                        })
+                        continue
+
+                    decision = {
+                        **raw_triplet,
+                        "kept": False,
+                        "drop_reason": None,
+                        "source_matches_hint": _endpoint_matches_hint(source, entity_hints),
+                        "target_matches_hint": _endpoint_matches_hint(target, entity_hints),
+                        "source_grounded": _is_grounded_relation_endpoint(source, entity_hints, ontology_classes, evidence),
+                        "target_grounded": _is_grounded_relation_endpoint(target, entity_hints, ontology_classes, evidence),
+                    }
+
+                    if not _relation_endpoints_in_hints(source, target, entity_hints):
+                        decision["drop_reason"] = "endpoint_not_grounded_in_hints"
+                        triplet_decisions.append(decision)
+                        logger.debug(
+                            "Dropping DSPy triplet without both endpoints grounded in hints source=%s relation=%s target=%s",
+                            source,
+                            relation,
+                            target,
+                        )
+                        continue
+                    if _is_ungrounded_relation_triplet(
+                        source,
+                        target,
+                        entity_hints,
+                        ontology_classes,
+                        evidence,
+                    ):
+                        decision["drop_reason"] = "endpoint_not_grounded_after_evidence_check"
+                        triplet_decisions.append(decision)
+                        logger.debug(
+                            "Dropping ungrounded DSPy triplet source=%s relation=%s target=%s evidence=%s",
+                            source,
+                            relation,
+                            target,
+                            evidence,
+                        )
+                        continue
+
+                    decision["kept"] = True
+                    triplet_decisions.append(decision)
+
+                    # Standardize upstream
+                    source = standardize_label(source)
+                    target = standardize_label(target)
+                    relation = standardize_label(relation)
+                    source_type = standardize_label(source_type) if source_type else "ENTITY"
+                    target_type = standardize_label(target_type) if target_type else "ENTITY"
                     
-                    if source and relation and target:
-                        # Standardize upstream
-                        source = standardize_label(source)
-                        target = standardize_label(target)
-                        relation = standardize_label(relation)
-                        source_type = standardize_label(source_type) if source_type else "ENTITY"
-                        target_type = standardize_label(target_type) if target_type else "ENTITY"
+                    props = {
+                        "confidence": confidence,
+                        "evidence": evidence
+                    }
+                    relations.append((source, relation, target, props))
+                    
+                    if source not in seen_nodes:
+                        nodes_data.append({"id": source, "type": source_type, "properties": {}})
+                        seen_nodes.add(source)
+                    if target not in seen_nodes:
+                        nodes_data.append({"id": target, "type": target_type, "properties": {}})
+                        seen_nodes.add(target)
                         
-                        props = {
-                            "confidence": confidence,
-                            "evidence": evidence
-                        }
-                        relations.append((source, relation, target, props))
-                        
-                        if source not in seen_nodes:
-                            nodes_data.append({"id": source, "type": source_type, "properties": {}})
-                            seen_nodes.add(source)
-                        if target not in seen_nodes:
-                            nodes_data.append({"id": target, "type": target_type, "properties": {}})
-                            seen_nodes.add(target)
-                        
-            return relations, nodes_data
+            return relations, nodes_data, {
+                "raw_triplets": raw_triplets,
+                "triplet_decisions": triplet_decisions,
+            }
             
         except Exception as e:
             logger.error(f"DSPy extraction failed: {e}", exc_info=True)
-            return [], []
+            return [], [], {}
 
 def get_extractor(config: Dict[str, Any]) -> BaseExtractor:
     """
-    Factory function to get the appropriate extractor based on config.
-    
-    Args:
-        config: Configuration dictionary
-        
-    Returns:
-        Configured extractor instance
+    Factory function to get the appropriate relation extractor based on config.
+
+    The legacy `extraction.backend` flag is overloaded: values like `gliner`,
+    `gliner2`, and `spacy` select the NER backend, while `llm`/`dspy` select
+    relation extraction behavior. To preserve backward compatibility, any
+    non-`llm` backend defaults to the DSPy relation extractor.
     """
-    # Look for backend in extraction settings
     extraction_config = config.get('extraction', {})
     if hasattr(extraction_config, 'model_dump'):
         extraction_config = extraction_config.model_dump()
-        
-    extractor_type = extraction_config.get('backend', 'dspy') # Default to dspy now
-    
-    logger.info(f"Initializing graph extractor: {extractor_type}")
-    
-    if extractor_type == 'dspy':
+
+    ner_backend = extraction_config.get('ner_backend') or extraction_config.get('backend', 'dspy')
+    relation_backend = extraction_config.get('relation_backend')
+    if not relation_backend:
+        relation_backend = 'langchain' if ner_backend == 'llm' else 'dspy'
+
+    logger.info(
+        f"Initializing graph extractor: relation_backend={relation_backend} "
+        f"(configured backend={ner_backend})"
+    )
+
+    if relation_backend == 'dspy':
         return DSPyExtractor(config)
-    
+
     return LangChainExtractor(config)

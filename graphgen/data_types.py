@@ -39,6 +39,7 @@ class PipelineContext:
         self.extraction_tasks: List[ChunkExtractionTask] = []
         self.stats: Dict[str, Any] = {}
         self.errors: Dict[str, List[str]] = {}
+        self.diagnostics: Dict[str, Any] = {}
         self.total_segments: int = 0
         
     def add_error(self, stage: str, message: str) -> None:

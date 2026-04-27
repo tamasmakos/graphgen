@@ -2,6 +2,8 @@ import dspy
 import logging
 import os
 from typing import Dict, Any, List, Optional
+from graphgen.config.llm import _extract_secret
+from graphgen.config.llm import normalize_groq_model
 from graphgen.pipeline.summarization.dspy_module import CommunitySummarizerModule
 from graphgen.pipeline.summarization.models import SummarizationTask
 
@@ -21,23 +23,13 @@ class DSPySummarizer:
         llm_config = self.config.get('llm', {})
         if hasattr(llm_config, 'model_dump'):
             llm_config = llm_config.model_dump()
-            
+
         # Try to find the best model name from config
         model = llm_config.get('summarization_model') or llm_config.get('base_model') or llm_config.get('model') or 'gpt-4o'
-        
+
         # Check for Groq API Key
-        groq_api_key = None
         infra_config = self.config.get('infra', {})
-        if hasattr(infra_config, 'model_dump'):
-            infra_config = infra_config.model_dump()
-            
-        val = infra_config.get('groq_api_key') or llm_config.get('groq_api_key')
-        if val:
-             if hasattr(val, 'get_secret_value'):
-                 groq_api_key = val.get_secret_value()
-             else:
-                 groq_api_key = str(val)
-        
+        groq_api_key = _extract_secret(infra_config, 'groq_api_key') or _extract_secret(llm_config, 'groq_api_key')
         if not groq_api_key:
             groq_api_key = os.environ.get('GROQ_API_KEY')
 
@@ -45,26 +37,27 @@ class DSPySummarizer:
         try:
              if groq_api_key:
                  logger.info(f"Configuring DSPy for Groq with model {model}")
+                 groq_model = normalize_groq_model(model)
                  lm = dspy.LM(
-                     model=model, 
-                     api_key=groq_api_key, 
+                     model=groq_model,
+                     api_key=groq_api_key,
                      api_base="https://api.groq.com/openai/v1",
                      temperature=0.0,
                      max_tokens=4096 # Higher limit for summarization
                  )
                  dspy.configure(lm=lm)
              else:
-                 api_key = llm_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
+                 api_key = _extract_secret(llm_config, 'api_key') or os.environ.get('OPENAI_API_KEY')
                  base_url = llm_config.get('base_url')
                  lm = dspy.LM(
-                     model=model, 
-                     api_key=api_key, 
+                     model=model,
+                     api_key=api_key,
                      api_base=base_url,
                      temperature=0.0,
                      max_tokens=4096
                  )
                  dspy.configure(lm=lm)
-                 
+
         except Exception as e:
              logger.warning(f"Failed to configure DSPy LM: {e}")
              pass
