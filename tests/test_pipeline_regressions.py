@@ -410,11 +410,13 @@ class PipelineRobustnessRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("accepted_nodes", payload)
         self.assertIn("relation_decisions", payload)
         self.assertIn("raw_triplets", payload)
+        self.assertIn("entity_surface_metadata", payload)
         self.assertTrue(payload["relation_diagnostics_available"])
         self.assertEqual(payload["accepted_relations"][0][0], "MARIO_DRAGHI")
         self.assertEqual(len(payload["relation_decisions"]), 2)
         self.assertTrue(payload["relation_decisions"][0]["kept"])
         self.assertEqual(payload["relation_decisions"][1]["drop_reason"], "source_not_grounded_in_hints")
+        self.assertEqual(payload["entity_surface_metadata"][0]["surface_form_class"], "named_entity")
 
     async def test_segment_diagnostics_include_final_entities_and_relations(self):
         ctx = PipelineContext(graph=nx.DiGraph())

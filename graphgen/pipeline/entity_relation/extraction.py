@@ -10,6 +10,10 @@ import torch
 # --- Graphgen Imports ---
 from graphgen.data_types import PipelineContext, ChunkExtractionTask
 from graphgen.pipeline.entity_relation.extractors import BaseExtractor, get_extractor
+from graphgen.pipeline.graph_cleaning.canonicalization import (
+    classify_surface_form,
+    normalize_surface_form,
+)
 from graphgen.prototype_gliner2_ontology import (
     build_top_level_label_space,
     build_gliner2_schema,
@@ -355,6 +359,21 @@ def _build_relation_eligible_entities(gliner_entities: List[Dict[str, Any]]) -> 
         return deduped_eligible
     return list(dict.fromkeys(fallback))
 
+def _build_entity_surface_metadata(gliner_entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    metadata = []
+    for entity in gliner_entities or []:
+        text = entity.get('text', '')
+        metadata.append({
+            'text': text,
+            'canonical_form': normalize_surface_form(text),
+            'surface_form_class': classify_surface_form(text),
+            'ontology_label': entity.get('ontology_label') or entity.get('label'),
+            'confidence': entity.get('confidence'),
+            'merge_candidate': classify_surface_form(text) == 'named_entity',
+        })
+    return metadata
+
+
 async def process_extraction_task(
     deps: PipelineContext,
     task: ChunkExtractionTask,
@@ -414,6 +433,8 @@ async def process_extraction_task(
             # Deduplicate Discoveries
             discovered_entities = list(dict.fromkeys(discovered_entities))
 
+            entity_surface_metadata = _build_entity_surface_metadata(gliner_entities)
+
             chunk_diag_payload = None
             chunk_diag_path = None
             if diagnostics_enabled(config):
@@ -424,6 +445,7 @@ async def process_extraction_task(
                     'task_entities': task.entities,
                     'ontology_labels': ontology_labels,
                     'ner': ner_diagnostics,
+                    'entity_surface_metadata': entity_surface_metadata,
                     'found_labels': sorted(found_labels),
                     'node_labels': node_labels,
                     'relation_eligible_entities': relation_eligible_entities,
@@ -464,6 +486,7 @@ async def process_extraction_task(
                 chunk_data['diagnostic_snapshot'] = {
                     'found_labels': sorted(found_labels),
                     'node_labels': node_labels,
+                    'entity_surface_metadata': entity_surface_metadata,
                     'relation_eligible_entities': relation_eligible_entities,
                     'discovered_entities': sorted(discovered_entities),
                     'raw_relations': raw_relations,

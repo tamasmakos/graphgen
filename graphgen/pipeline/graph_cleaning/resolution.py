@@ -13,6 +13,11 @@ import numpy as np
 import networkx as nx
 from typing import Dict, List, Set, Tuple, Any, Optional
 from difflib import SequenceMatcher
+from graphgen.pipeline.graph_cleaning.canonicalization import (
+    are_potential_aliases,
+    classify_surface_form,
+    normalize_surface_form,
+)
 from graphgen.utils.utils import merge_node_into
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -31,13 +36,44 @@ class EntityRecord:
     structural_embedding: np.ndarray = None # Node2Vec embedding
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+
+def _types_compatible(type_a: str, type_b: str) -> bool:
+    if not type_a or not type_b:
+        return True
+    return normalize_surface_form(type_a) == normalize_surface_form(type_b)
+
+
+def _neighbor_signature(graph: nx.DiGraph, node_id: str) -> Set[Tuple[str, str]]:
+    signature: Set[Tuple[str, str]] = set()
+    if node_id not in graph:
+        return signature
+    for neighbor in graph.neighbors(node_id):
+        edge = graph.get_edge_data(node_id, neighbor) or {}
+        signature.add((normalize_surface_form(edge.get('label', '')), normalize_surface_form(str(neighbor))))
+    for source, _, edge in graph.in_edges(node_id, data=True):
+        signature.add((normalize_surface_form(edge.get('label', '')), normalize_surface_form(str(source))))
+    return signature
+
+
+def _neighbor_compatibility(graph: Optional[nx.DiGraph], node_a: str, node_b: str) -> float:
+    if graph is None:
+        return 0.0
+    sig_a = _neighbor_signature(graph, node_a)
+    sig_b = _neighbor_signature(graph, node_b)
+    if not sig_a or not sig_b:
+        return 0.0
+    intersection = len(sig_a & sig_b)
+    union = len(sig_a | sig_b)
+    return intersection / union if union else 0.0
+
 class BlockingResolver:
     """
     Implements blocking-based entity resolution to avoid O(N^2) comparisons.
     """
-    def __init__(self, similarity_threshold: float = 0.90):
+    def __init__(self, similarity_threshold: float = 0.90, graph: Optional[nx.DiGraph] = None):
         self.similarity_threshold = similarity_threshold
         self.records: List[EntityRecord] = []
+        self.graph = graph
         
     def add_records(self, records: List[EntityRecord]):
         self.records.extend(records)
@@ -71,6 +107,23 @@ class BlockingResolver:
         Compute similarity between two records.
         Uses embedding cosine similarity if available, otherwise string similarity.
         """
+        if not _types_compatible(rec_a.type, rec_b.type):
+            return 0.0
+
+        class_a = classify_surface_form(rec_a.text)
+        class_b = classify_surface_form(rec_b.text)
+        if {class_a, class_b} == {'role_artifact', 'named_entity'}:
+            return 0.0
+        if 'role_artifact' in {class_a, class_b} and class_a != class_b:
+            return 0.0
+        if {class_a, class_b} == {'concept_like', 'named_entity'}:
+            return 0.0
+
+        if are_potential_aliases(rec_a.text, rec_b.text):
+            alias_bonus = 0.97
+        else:
+            alias_bonus = 0.0
+
         sim_semantic = 0.0
         has_semantic = False
         
@@ -94,40 +147,34 @@ class BlockingResolver:
             if norm_a > 0 and norm_b > 0:
                 sim_structural = dot / (norm_a * norm_b)
                 has_structural = True
+
+        neighborhood_score = _neighbor_compatibility(self.graph, rec_a.id, rec_b.id)
                 
         # Combine similarities
         if has_semantic and has_structural:
-            # Weighted average: 70% Semantic, 30% Structural
-            # Structural confirms they play same role, Semantic confirms they mean same thing
-            return (0.7 * sim_semantic) + (0.3 * sim_structural)
+            combined = (0.6 * sim_semantic) + (0.2 * sim_structural) + (0.2 * neighborhood_score)
+            return max(combined, alias_bonus)
         elif has_semantic:
-            return sim_semantic
+            combined = (0.85 * sim_semantic) + (0.15 * neighborhood_score)
+            return max(combined, alias_bonus)
         elif has_structural:
-            # Only structural is risky for ER (two different people might have same role)
-            # So we penalize it or treat as weak signal
-            return sim_structural * 0.8 # Penalize pure structural match
+            combined = (0.7 * sim_structural) + (0.3 * neighborhood_score)
+            return max(combined * 0.8, alias_bonus)
 
-        
         # 2. String Similarity
-        # a) Normal SequenceMatcher
         text_a = rec_a.text.lower()
         text_b = rec_b.text.lower()
         seq_sim = SequenceMatcher(None, text_a, text_b).ratio()
-        if seq_sim >= self.similarity_threshold:
-            return seq_sim
-            
-        # b) Token Set Similarity (for "Apple" vs "Apple Inc.")
-        # Re-use the module-level helper if possible, or reimplement simple version
         tok_sim = _token_similarity(text_a, text_b)
-        if tok_sim >= self.similarity_threshold:
-            return tok_sim
-            
-        # c) Substring / Prefix bias
-        # If one is a prefix of another and length difference is small?
+        string_score = max(seq_sim, tok_sim)
+
+        if self.graph is not None:
+            string_score = max(string_score, min(0.99, string_score + (0.15 * neighborhood_score)))
+
         if text_a.startswith(text_b) or text_b.startswith(text_a):
-             return max(seq_sim, 0.85) # Boost prefix matches
-             
-        return seq_sim
+            string_score = max(string_score, 0.85)
+
+        return max(string_score, alias_bonus)
 
     def resolve(self) -> Dict[str, str]:
         """
@@ -437,7 +484,7 @@ def resolve_entities_semantically(
         return {'merged_nodes': 0, 'clusters_found': 0}
 
     # 2. Use BlockingResolver
-    resolver = BlockingResolver(similarity_threshold=similarity_threshold)
+    resolver = BlockingResolver(similarity_threshold=similarity_threshold, graph=graph)
     records = []
     
     # Store ID mapping to handle graph nodes
