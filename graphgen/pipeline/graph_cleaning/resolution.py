@@ -17,6 +17,7 @@ from graphgen.pipeline.graph_cleaning.canonicalization import (
     are_potential_aliases,
     classify_surface_form,
     normalize_surface_form,
+    surface_forms_conflict,
 )
 from graphgen.utils.utils import merge_node_into
 from dataclasses import dataclass, field
@@ -108,6 +109,9 @@ class BlockingResolver:
         Uses embedding cosine similarity if available, otherwise string similarity.
         """
         if not _types_compatible(rec_a.type, rec_b.type):
+            return 0.0
+
+        if surface_forms_conflict(rec_a.text, rec_b.text):
             return 0.0
 
         class_a = classify_surface_form(rec_a.text)
@@ -491,12 +495,20 @@ def resolve_entities_semantically(
     id_to_record = {}
     
     for nid, emb in embeddings.items():
-        name = graph.nodes[nid].get('name', nid)
+        node_data = graph.nodes[nid]
+        name = node_data.get('name', nid)
+        entity_type = (
+            node_data.get('ontology_class')
+            or node_data.get('ontology_label')
+            or node_data.get('entity_type')
+            or node_data.get('llm_type')
+            or 'Entity'
+        )
         
         # Get structural embedding if available
         struct_emb = structural_embeddings.get(nid) if structural_embeddings else None
         
-        rec = EntityRecord(id=nid, text=name, type='Entity', embedding=emb, structural_embedding=struct_emb)
+        rec = EntityRecord(id=nid, text=name, type=entity_type, embedding=emb, structural_embedding=struct_emb)
         records.append(rec)
         id_to_record[nid] = rec
         

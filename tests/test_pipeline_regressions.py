@@ -108,6 +108,51 @@ class MainEnvResolutionRegressionTests(unittest.TestCase):
 
 
 class ConfigRegressionTests(unittest.TestCase):
+    def test_requirements_include_node2vec_dependency(self):
+        requirements_path = Path("/root/graphgen/requirements.txt")
+        requirements = requirements_path.read_text(encoding="utf-8")
+        self.assertRegex(requirements, r"(?im)^node2vec(?:[<>=!~].*)?$")
+
+    def test_run_with_config_normalizes_relative_paths_from_config_directory(self):
+        import importlib.util
+        import sys
+        import tempfile
+        from pathlib import Path as StdPath
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = StdPath(tmpdir)
+            config_path = tmp_path / "config.custom.yaml"
+            config_path.write_text("infra:\n  input_dir: input/txt\n", encoding="utf-8")
+
+            spec = importlib.util.spec_from_file_location("run_with_config_test", "/root/graphgen/run_with_config.py")
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+
+            original_cwd = os.getcwd()
+            old_argv = sys.argv[:]
+            try:
+                sys.argv = ["run_with_config.py", str(config_path)]
+                with patch.object(module, "resolve_env_file", return_value="/root/graphgen/.env"), \
+                     patch.object(module, "configure_logging"), \
+                     patch.object(module, "get_extractor", return_value=object()), \
+                     patch.object(module, "KnowledgePipeline") as pipeline_cls, \
+                     patch.object(module.PipelineSettings, "load") as mock_load, \
+                     patch.object(module.asyncio, "run"):
+                    mock_settings = Mock(debug=False)
+                    mock_settings.model_dump.return_value = {}
+                    mock_load.return_value = mock_settings
+                    pipeline_cls.return_value.run.return_value = object()
+
+                    module.main()
+
+                    self.assertEqual(os.getcwd(), str(tmp_path))
+                    self.assertEqual(mock_load.call_args.kwargs["config_path"], str(config_path.resolve()))
+            finally:
+                os.chdir(original_cwd)
+                sys.argv = old_argv
+
     def test_repo_config_disables_iterative_runtime_by_default(self):
         settings = PipelineSettings.load(config_path="/root/graphgen/config.yaml", env_file="/root/graphgen/.env")
         self.assertFalse(settings.iterative.enabled)
@@ -434,7 +479,6 @@ class KnowledgePipelineNode2VecRegressionTests(unittest.IsolatedAsyncioTestCase)
         self.assertTrue(ctx.stats["communities"]["node2vec_enabled"])
         mock_weights.assert_called_once()
         mock_summaries.assert_awaited_once()
-
 
 class LexicalGraphBudgetRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_lexical_graph_respects_chunk_budget(self):

@@ -268,12 +268,19 @@ class KnowledgePipeline:
                     workers=1,
                     seed=self.settings.community.seed or 42,
                 )
+
                 weighted_count = 0
                 for (u, v), weight in weights.items():
                     if ctx.graph.has_edge(u, v) and ctx.graph[u][v].get('graph_type') == 'entity_relation':
                         ctx.graph[u][v]['weight'] = weight
                         weighted_count += 1
-                logger.info("Applied Node2Vec weights to %d entity-relation edges.", weighted_count)
+                if weighted_count == 0:
+                    logger.warning(
+                        "Node2Vec weighting enabled but no entity-relation edge weights were produced; continuing with unweighted detection."
+                    )
+                else:
+                    logger.info("Applied Node2Vec weights to %d entity-relation edges.", weighted_count)
+
 
             comm_results = detector.detect_communities(ctx.graph)
             communities = comm_results['assignments']

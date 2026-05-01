@@ -193,9 +193,11 @@ class IterativeOrchestrator:
                 from graphgen.pipeline.embeddings.node2vec_wrapper import compute_node2vec_weights
                 
                 logger.debug("Computing Node2Vec weights...")
-                # Compute weights
+                # Compute weights on the entity-relation graph only so structural
+                # weighting aligns with the graph actually used for community detection.
+                entity_relation_graph = detector._get_entity_graph(ctx.graph).copy()
                 weights = compute_node2vec_weights(
-                    ctx.graph, 
+                    entity_relation_graph, 
                     dimensions=self.settings.community.node2vec_dimensions,
                     walk_length=self.settings.community.node2vec_walk_length,
                     num_walks=self.settings.community.node2vec_num_walks,
