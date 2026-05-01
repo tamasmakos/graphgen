@@ -17,8 +17,8 @@ neo4j
 pykeen
 rdflib
 gliner
+node2vec
 powerlaw
 pandas
 seaborn
 matplotlib
-powerlaw
