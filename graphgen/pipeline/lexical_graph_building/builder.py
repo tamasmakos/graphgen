@@ -12,6 +12,68 @@ from graphgen.config.schema import GraphSchema
 
 logger = logging.getLogger(__name__)
 
+
+def _build_segments_from_text(text: str, doc_id: str, config: Dict[str, Any]) -> List[SegmentData]:
+    extraction_config = config.get('extraction', {})
+    if hasattr(extraction_config, 'model_dump'):
+        extraction_config = extraction_config.model_dump()
+
+    segmentation_mode = str(extraction_config.get('segmentation_mode', 'line') or 'line').strip().lower()
+    min_segment_words = int(extraction_config.get('min_segment_words', 0) or 0)
+    normalized_text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+    if segmentation_mode == 'document':
+        candidate_segments = []
+        for line_number, line in enumerate(normalized_text.splitlines(), start=1):
+            if line.strip():
+                candidate_segments.append((line_number, normalized_text.strip()))
+                break
+        if not candidate_segments and normalized_text.strip():
+            candidate_segments = [(1, normalized_text.strip())]
+    elif segmentation_mode == 'paragraph':
+        candidate_segments = []
+        current_lines: List[str] = []
+        current_start_line = None
+        for line_number, raw_line in enumerate(normalized_text.splitlines(), start=1):
+            stripped_line = raw_line.strip()
+            if stripped_line:
+                if current_start_line is None:
+                    current_start_line = line_number
+                current_lines.append(stripped_line)
+                continue
+            if current_lines and current_start_line is not None:
+                candidate_segments.append((current_start_line, ' '.join(current_lines)))
+                current_lines = []
+                current_start_line = None
+        if current_lines and current_start_line is not None:
+            candidate_segments.append((current_start_line, ' '.join(current_lines)))
+    else:
+        candidate_segments = [
+            (i + 1, line.strip())
+            for i, line in enumerate(normalized_text.splitlines())
+            if line.strip()
+        ]
+
+    if min_segment_words > 0:
+        candidate_segments = [
+            (line_number, segment_text)
+            for line_number, segment_text in candidate_segments
+            if len(segment_text.split()) >= min_segment_words
+        ]
+
+    segments: List[SegmentData] = []
+    for idx, (line_number, segment_text) in enumerate(candidate_segments):
+        segments.append(SegmentData(
+            segment_id=f"{doc_id}_raw_{idx}",
+            content=segment_text,
+            line_number=line_number,
+            date=None,
+            metadata={'segmentation_mode': segmentation_mode}
+        ))
+
+    return segments
+
+
 def get_max_concurrent(config: Dict[str, Any], default: int = 8) -> int:
     """Get max_concurrent_extractions from config with fallback to default."""
     extraction_cfg = config.get('extraction', {})
@@ -196,20 +258,7 @@ async def process_single_document_lexical(deps: PipelineContext, filename: str, 
         if isinstance(parser, LifeLogParser):
             segments = parser.parse(text, filename, None)
         else:
-            # Default line-based segmentation
-            lines = text.splitlines()
-            segments = []
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if not line: continue
-                # We reuse SegmentData
-                segments.append(SegmentData(
-                    segment_id=f"{doc_id}_raw_{i}", # temp ID, redefined in add_segments
-                    content=line,
-                    line_number=i,
-                    date=None,
-                    metadata={}
-                ))
+            segments = _build_segments_from_text(text, doc_id, config)
         
         segments_result = await add_segments_to_graph(deps, segments, doc_id, config, schema=schema)
         

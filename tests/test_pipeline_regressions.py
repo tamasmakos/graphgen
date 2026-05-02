@@ -4,9 +4,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from pydantic import ValidationError
 from unittest.mock import Mock, patch
 
 import networkx as nx
+import numpy as np
 
 from graphgen.config.llm import get_langchain_llm
 from graphgen.config.settings import PipelineSettings
@@ -23,7 +26,7 @@ from graphgen.pipeline.entity_relation.extraction import (
 )
 from graphgen.pipeline.embeddings.rag import generate_rag_embeddings as mock_generate_rag_embeddings
 from graphgen.utils.vector_embedder.rag import generate_rag_embeddings as real_generate_rag_embeddings
-from graphgen.utils.labels import resolve_entity_labels
+from graphgen.utils.labels import resolve_entity_labels, resolve_entity_label_profiles
 from graphgen.pipeline.entity_relation.extractors import (
     DSPyExtractor,
     LangChainExtractor,
@@ -34,6 +37,8 @@ from graphgen.pipeline.entity_relation.extractors import (
     _relation_endpoints_in_hints,
     get_extractor,
 )
+from graphgen.pipeline.entity_relation.label_space import build_label_profiles, build_gliner2_schema, select_candidate_label_profiles
+from graphgen.utils.schema_utils import save_graph_schema
 from graphgen.utils.diagnostics import diagnostics_enabled, write_diagnostic_json
 from graphgen.pipeline.summarization.summarizer import DSPySummarizer
 from graphgen.pipeline.summarization.core import _parse_summary_response, process_batch_tasks
@@ -113,6 +118,67 @@ class ConfigRegressionTests(unittest.TestCase):
         requirements = requirements_path.read_text(encoding="utf-8")
         self.assertRegex(requirements, r"(?im)^node2vec(?:[<>=!~].*)?$")
 
+    def test_pipeline_settings_reject_invalid_extraction_mode(self):
+        with self.assertRaises(ValidationError):
+            PipelineSettings(extraction={"mode": "improvise"})
+
+    def test_pipeline_settings_loads_external_schema_and_label_profiles_relative_to_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            schema_path = tmp_path / "schema.json"
+            labels_path = tmp_path / "labels.json"
+            config_path = tmp_path / "config.yaml"
+
+            schema_path.write_text(json.dumps({
+                "nodes": {
+                    "Doc": {"label": "DOC", "source_type": "document", "attributes": ["filename"]},
+                    "Passage": {"label": "PASSAGE", "source_type": "segment", "attributes": ["content"]},
+                    "Snippet": {"label": "SNIPPET", "source_type": "chunk", "attributes": ["text"]},
+                },
+                "edges": [
+                    {"source_label": "DOC", "target_label": "PASSAGE", "relation_type": "HAS_PASSAGE", "is_hierarchical": True},
+                    {"source_label": "PASSAGE", "target_label": "SNIPPET", "relation_type": "HAS_SNIPPET", "is_hierarchical": True},
+                ],
+            }), encoding="utf-8")
+            labels_path.write_text(json.dumps([
+                {"label": "Wizard", "description": "A magical person.", "aliases": ["wizard"]}
+            ]), encoding="utf-8")
+            config_path.write_text(
+                "schema_path: schema.json\n"
+                "extraction:\n"
+                "  label_profiles_path: labels.json\n",
+                encoding="utf-8",
+            )
+
+            settings = PipelineSettings.load(config_path=str(config_path), env_file="/root/graphgen/.env")
+            profiles = resolve_entity_label_profiles({
+                "label_profiles_path": settings.extraction.label_profiles_path,
+                "ontology": {"enabled": False},
+            })
+
+            self.assertEqual(settings.extraction.label_profiles_path, str(labels_path.resolve()))
+            self.assertEqual(settings.schema_config["nodes"]["Snippet"]["label"], "SNIPPET")
+            self.assertEqual(profiles[0]["label"], "WIZARD")
+            self.assertEqual(profiles[0]["description"], "A magical person.")
+
+    def test_save_graph_schema_uses_explicit_schema_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            schema = {
+                "nodes": {
+                    "Doc": {"label": "DOC", "source_type": "document", "attributes": ["filename"]},
+                    "Passage": {"label": "PASSAGE", "source_type": "segment", "attributes": ["content"]},
+                },
+                "edges": [
+                    {"source_label": "DOC", "target_label": "PASSAGE", "relation_type": "HAS_PASSAGE", "is_hierarchical": True}
+                ],
+            }
+
+            save_graph_schema(nx.DiGraph(), str(output_dir), schema_config=schema)
+
+            saved = json.loads((output_dir / "graph_schema.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["nodes"]["Passage"]["label"], "PASSAGE")
+
     def test_run_with_config_normalizes_relative_paths_from_config_directory(self):
         import importlib.util
         import sys
@@ -186,6 +252,59 @@ class ConfigRegressionTests(unittest.TestCase):
 
 
 class ExtractionRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_extract_entities_for_chunk_skips_label_based_ner_in_schemaless_mode(self):
+        with patch("graphgen.pipeline.entity_relation.extraction.get_gliner_model") as mock_get_gliner_model:
+            entities = await _extract_entities_for_chunk(
+                "Harry met Hermione.",
+                {"extraction": {"mode": "schemaless", "backend": "gliner"}},
+                ["PERSON"],
+            )
+
+        self.assertEqual(entities, [])
+        mock_get_gliner_model.assert_not_called()
+
+    async def test_extract_all_entities_relations_uses_schemaless_mode_without_label_profiles(self):
+        deps = PipelineContext(graph=nx.DiGraph())
+        deps.graph.add_node("chunk-1", node_type="CHUNK")
+        deps.extraction_tasks = [
+            ChunkExtractionTask(
+                chunk_id="chunk-1",
+                chunk_text="The Potters had a son, Harry.",
+                segment_id="seg-1",
+                parent_doc_id="doc-1",
+                keywords=[],
+                entities=[],
+            )
+        ]
+
+        class FakeExtractor:
+            async def extract_relations(self, text, keywords=None, entities=None, abstract_concepts=None):
+                return [], [], {}
+
+        async def fake_process_task(deps_arg, task, semaphore, extractor, config, ontology_labels, label_profiles=None):
+            self.assertEqual(config["extraction"]["mode"], "schemaless")
+            self.assertEqual(ontology_labels, [])
+            self.assertEqual(label_profiles, [])
+            deps_arg.graph.nodes[task.chunk_id]["knowledge_triplets"] = []
+            deps_arg.graph.nodes[task.chunk_id]["raw_extraction"] = {"relations": [], "nodes": []}
+            deps_arg.graph.nodes[task.chunk_id]["gliner_entities"] = []
+            deps_arg.graph.nodes[task.chunk_id]["extraction_successful"] = True
+            return {"success": True, "chunk_id": task.chunk_id, "entity_count": 1, "relation_count": 1}
+
+        with patch("graphgen.pipeline.entity_relation.extraction.process_extraction_task", side_effect=fake_process_task), \
+             patch("graphgen.pipeline.entity_relation.extraction.enrich_graph_per_segment", return_value={"errors": []}):
+            from graphgen.pipeline.entity_relation.extraction import extract_all_entities_relations
+
+            result = await extract_all_entities_relations(
+                deps,
+                {"extraction": {"mode": "schemaless", "ner_backend": "dspy", "gliner_preload": False}},
+                extractor=FakeExtractor(),
+            )
+
+        self.assertEqual(result["successful"], 1)
+        self.assertEqual(result["total_entities_extracted"], 1)
+        self.assertEqual(result["total_relations_extracted"], 1)
+
     async def test_gliner_predictions_are_flattened_before_normalization(self):
         class FakeModel:
             def inference(self, sentences, labels, threshold=0.5):
@@ -216,12 +335,58 @@ class ExtractionRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LLMConfigRegressionTests(unittest.TestCase):
-    def test_resolve_entity_labels_keeps_default_seed_when_ontology_enabled_without_manual_labels(self):
+    def test_resolve_entity_labels_returns_empty_when_ontology_enabled_without_manual_labels(self):
+        with patch("graphgen.utils.labels.extract_ontology_profiles", return_value=[]):
+            labels = resolve_entity_labels({
+                "ontology": {"enabled": True, "merge_with_manual": True},
+            })
+        self.assertEqual(labels, [])
+
+    def test_resolve_entity_labels_returns_empty_without_manual_or_ontology_labels(self):
         labels = resolve_entity_labels({
-            "ontology": {"enabled": True, "merge_with_manual": True},
+            "ontology": {"enabled": False},
         })
-        self.assertIn("PERSON", labels)
-        self.assertIn("EVENT", labels)
+        self.assertEqual(labels, [])
+
+    def test_build_label_profiles_generates_descriptions_without_manual_hints(self):
+        profiles = build_label_profiles([
+            {"label": "Political Party", "aliases": [], "description": None, "source": "config"}
+        ])
+        self.assertEqual(profiles[0]["label"], "POLITICAL_PARTY")
+        self.assertIn("political party", profiles[0]["description"].lower())
+
+    def test_select_candidate_label_profiles_prefers_semantic_match(self):
+        profiles = build_label_profiles([
+            {"label": "PERSON", "aliases": [], "description": "A named person.", "source": "config"},
+            {"label": "ORGANIZATION", "aliases": [], "description": "A named organization.", "source": "config"},
+        ])
+
+        class FakeEmbeddingModel:
+            is_available = True
+
+            def encode(self, texts, batch_size=None):
+                vectors = []
+                for text in texts:
+                    lowered = text.lower()
+                    if "harry met hermione" in lowered:
+                        vectors.append([1.0, 0.0])
+                    elif "named person" in lowered:
+                        vectors.append([0.95, 0.05])
+                    else:
+                        vectors.append([0.0, 1.0])
+                return np.array(vectors, dtype=float)
+
+        with patch("graphgen.pipeline.entity_relation.label_space.get_model", return_value=FakeEmbeddingModel()):
+            selection = select_candidate_label_profiles("Harry met Hermione in the hall.", profiles, top_k=1)
+
+        self.assertEqual(selection["candidate_labels"], ["PERSON"])
+        self.assertGreater(selection["profile_scores"][0]["semantic_score"], 0.9)
+
+    def test_build_gliner2_schema_uses_profile_descriptions(self):
+        schema = build_gliner2_schema([
+            {"label": "PERSON", "description": "Named entity or concept labeled person."}
+        ])
+        self.assertEqual(schema["entities"]["person"], "Named entity or concept labeled person.")
 
     @patch("graphgen.config.llm.ChatGroq")
     def test_get_langchain_llm_uses_env_groq_key_when_config_missing_it(self, mock_chatgroq):
@@ -481,6 +646,89 @@ class KnowledgePipelineNode2VecRegressionTests(unittest.IsolatedAsyncioTestCase)
         mock_summaries.assert_awaited_once()
 
 class LexicalGraphBudgetRegressionTests(unittest.IsolatedAsyncioTestCase):
+    def test_extraction_settings_support_segmentation_options(self):
+        settings = PipelineSettings(extraction={"segmentation_mode": "paragraph", "min_segment_words": 12})
+        self.assertEqual(settings.extraction.segmentation_mode, "paragraph")
+        self.assertEqual(settings.extraction.min_segment_words, 12)
+
+    def test_extraction_settings_reject_unknown_segmentation_mode(self):
+        with self.assertRaises(ValidationError):
+            PipelineSettings(extraction={"segmentation_mode": "scene"})
+
+    def test_extraction_settings_reject_unknown_label_selection_strategy(self):
+        with self.assertRaises(ValidationError):
+            PipelineSettings(extraction={"label_selection_strategy": "manual-hints"})
+
+    def test_build_segments_from_text_defaults_to_nonempty_lines(self):
+        from graphgen.pipeline.lexical_graph_building.builder import _build_segments_from_text
+
+        segments = _build_segments_from_text("Alpha\n\nBeta\n", "DOC_demo", {"extraction": {"segmentation_mode": "line"}})
+
+        self.assertEqual([segment.content for segment in segments], ["Alpha", "Beta"])
+        self.assertEqual([segment.line_number for segment in segments], [1, 3])
+
+    def test_build_segments_from_text_supports_paragraph_mode(self):
+        from graphgen.pipeline.lexical_graph_building.builder import _build_segments_from_text
+
+        text = "Title\n\nFirst paragraph line one.\nStill first paragraph.\n\nSecond paragraph."
+        segments = _build_segments_from_text(text, "DOC_demo", {"extraction": {"segmentation_mode": "paragraph"}})
+
+        self.assertEqual(len(segments), 3)
+        self.assertEqual(segments[0].content, "Title")
+        self.assertEqual(segments[0].line_number, 1)
+        self.assertEqual(segments[1].content, "First paragraph line one. Still first paragraph.")
+        self.assertEqual(segments[1].line_number, 3)
+        self.assertEqual(segments[2].content, "Second paragraph.")
+        self.assertEqual(segments[2].line_number, 6)
+
+    def test_build_segments_from_text_preserves_paragraph_start_line_numbers_with_leading_blank_lines(self):
+        from graphgen.pipeline.lexical_graph_building.builder import _build_segments_from_text
+
+        text = "\n\nIntro line.\nStill intro.\n\n\nSecond paragraph."
+        segments = _build_segments_from_text(text, "DOC_demo", {"extraction": {"segmentation_mode": "paragraph"}})
+
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[0].line_number, 3)
+        self.assertEqual(segments[0].content, "Intro line. Still intro.")
+        self.assertEqual(segments[1].line_number, 7)
+        self.assertEqual(segments[1].content, "Second paragraph.")
+
+    def test_build_segments_from_text_filters_short_segments(self):
+        from graphgen.pipeline.lexical_graph_building.builder import _build_segments_from_text
+
+        text = "CHAPTER ONE\n\nThis is a real paragraph with enough words to keep.\n\nHi there."
+        segments = _build_segments_from_text(
+            text,
+            "DOC_demo",
+            {"extraction": {"segmentation_mode": "paragraph", "min_segment_words": 5}},
+        )
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0].content, "This is a real paragraph with enough words to keep.")
+
+    async def test_build_lexical_graph_supports_custom_segment_and_chunk_labels(self):
+        ctx = PipelineContext(graph=nx.DiGraph())
+        schema = GraphSchema(nodes={
+            "Doc": NodeSchema(label="DOC", source_type="document"),
+            "Segment": NodeSchema(label="PASSAGE", source_type="segment"),
+            "Chunk": NodeSchema(label="SNIPPET", source_type="chunk"),
+        })
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "doc1.txt").write_text("Alpha paragraph with enough words to chunk.\n\nBeta paragraph with enough words too.", encoding="utf-8")
+            result = await build_lexical_graph(
+                ctx,
+                tmpdir,
+                {"extraction": {"segmentation_mode": "paragraph", "chunk_size": 64, "chunk_overlap": 8}},
+                schema=schema,
+            )
+
+        self.assertEqual(result["documents_processed"], 1)
+        self.assertGreater(result["total_chunks"], 0)
+        node_types = {data.get("node_type") for _, data in ctx.graph.nodes(data=True)}
+        self.assertIn("PASSAGE", node_types)
+        self.assertIn("SNIPPET", node_types)
+
     async def test_build_lexical_graph_respects_chunk_budget(self):
         ctx = PipelineContext(graph=nx.DiGraph())
         async def fake_process_single_document_lexical(deps, filename, input_dir, config=None, schema=None):
@@ -658,6 +906,33 @@ class LexicalGraphBudgetRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(report["global_separation"], 0.0)
         self.assertGreater(report["community_level"]["n_samples"], 3)
         self.assertGreater(report["subcommunity_level"]["n_samples"], 3)
+
+    def test_topic_separation_report_saved_json_serializes_pairwise_significance(self):
+        from graphgen.analytics.reporting import generate_topic_separation_report
+
+        graph = nx.DiGraph()
+        graph.add_node("TOPIC_0", node_type="TOPIC", title="T0", summary="S0")
+        graph.add_node("TOPIC_1", node_type="TOPIC", title="T1", summary="S1")
+        graph.add_node("ENTITY_A0", node_type="ENTITY_CONCEPT", embedding=[1.0, 0.0])
+        graph.add_node("ENTITY_A1", node_type="ENTITY_CONCEPT", embedding=[0.9, 0.1])
+        graph.add_node("ENTITY_B0", node_type="ENTITY_CONCEPT", embedding=[0.0, 1.0])
+        graph.add_node("ENTITY_B1", node_type="ENTITY_CONCEPT", embedding=[0.1, 0.9])
+        graph.add_edge("ENTITY_A0", "TOPIC_0")
+        graph.add_edge("ENTITY_A1", "TOPIC_0")
+        graph.add_edge("ENTITY_B0", "TOPIC_1")
+        graph.add_edge("ENTITY_B1", "TOPIC_1")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "topic_separation_report.json"
+            generate_topic_separation_report(
+                graph,
+                str(output_path),
+                PipelineSettings().analysis,
+            )
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertGreaterEqual(len(payload["pairwise_comparisons"]), 1)
+        self.assertIsInstance(payload["pairwise_comparisons"][0]["significant"], bool)
 
     async def test_process_batch_tasks_retries_rate_limit_errors(self):
         task = SummarizationTask(
@@ -925,6 +1200,37 @@ class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
         eligible = _build_relation_eligible_entities(entities)
         self.assertEqual(sorted(eligible), ["US", "WE"])
 
+    async def test_process_extraction_task_allows_schemaless_relation_extraction_without_entity_labels(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-no-labels"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="Mr. and Mrs. Dursley lived at number four, Privet Drive.")
+
+        class FakeExtractor:
+            async def extract_relations(self, **kwargs):
+                self.kwargs = kwargs
+                return ([
+                    ("MR_AND_MRS_DURSLEY", "LIVES_AT", "NUMBER_FOUR_PRIVET_DRIVE", {"confidence": 1.0})
+                ], [
+                    {"id": "MR_AND_MRS_DURSLEY", "type": "ENTITY"},
+                    {"id": "NUMBER_FOUR_PRIVET_DRIVE", "type": "ENTITY"},
+                ])
+
+        with patch("graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk", return_value=[]):
+            result = await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                FakeExtractor(),
+                {"extraction": {"backend": "gliner2"}},
+                [],
+                label_profiles=[],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["relation_count"], 1)
+        self.assertEqual(ctx.graph.nodes[chunk_id]["knowledge_triplets"][0][0], "MR_AND_MRS_DURSLEY")
+
     async def test_process_extraction_task_uses_ontology_labels_for_node_filtering(self):
         ctx = PipelineContext()
         chunk_id = "chunk-ontology-filter"
@@ -1008,3 +1314,139 @@ class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["entity_count"], 2)
         self.assertEqual(result["relation_count"], 0)
         self.assertTrue(ctx.graph.nodes[chunk_id]["extraction_successful"])
+
+    async def test_process_extraction_task_uses_schemaless_triplets_when_filter_drops_all_relations(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-schemaless"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="Rubeus Hagrid, Keeper of Keys and Grounds at Hogwarts.")
+
+        fake_entities = [
+            {
+                "text": "RUBEUS_HAGRID",
+                "label": "PERSON",
+                "ontology_label": "PERSON",
+                "confidence": 0.99,
+                "candidate_labels": ["PERSON", "SCHOOL"],
+                "backend": "gliner2",
+            }
+        ]
+
+        async def fake_extract_relations_with_llm_async(**kwargs):
+            return (
+                [],
+                [],
+                {
+                    "raw_triplets": [
+                        {
+                            "source": "Rubeus Hagrid",
+                            "relation": "is",
+                            "target": "Keeper of Keys and Grounds at Hogwarts",
+                            "source_type": "Person",
+                            "target_type": "Role",
+                            "confidence": 1.0,
+                            "evidence": "Rubeus Hagrid, Keeper of Keys and Grounds at Hogwarts.",
+                        }
+                    ],
+                    "triplet_decisions": [
+                        {
+                            "source": "Rubeus Hagrid",
+                            "relation": "is",
+                            "target": "Keeper of Keys and Grounds at Hogwarts",
+                            "source_type": "Person",
+                            "target_type": "Role",
+                            "confidence": 1.0,
+                            "evidence": "Rubeus Hagrid, Keeper of Keys and Grounds at Hogwarts.",
+                            "kept": False,
+                            "drop_reason": "endpoint_not_grounded_in_hints",
+                            "source_grounded": True,
+                            "target_grounded": True,
+                        }
+                    ],
+                },
+            )
+
+        with patch("graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk", return_value=(fake_entities, {"backend": "gliner2"})), \
+             patch("graphgen.pipeline.entity_relation.extraction.extract_relations_with_llm_async", side_effect=fake_extract_relations_with_llm_async):
+            result = await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                SimpleNamespace(),
+                {"extraction": {"backend": "gliner2", "diagnostic_mode": True, "diagnostic_output_subdir": "diag-test"}, "infra": {"output_dir": tempfile.gettempdir()}},
+                ["PERSON", "SCHOOL"],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["relation_count"], 2)
+        relations = ctx.graph.nodes[chunk_id]["knowledge_triplets"]
+        normalized = {(src, rel, tgt) for src, rel, tgt, _ in relations}
+        self.assertIn(("RUBEUS_HAGRID", "IS", "KEEPER_OF_KEYS_AND_GROUNDS_AT_HOGWARTS"), normalized)
+        self.assertIn(("RUBEUS_HAGRID", "AT", "HOGWARTS"), normalized)
+        self.assertEqual(ctx.graph.nodes[chunk_id]["raw_extraction"]["nodes"][0]["id"], "RUBEUS_HAGRID")
+
+    async def test_process_extraction_task_does_not_readd_ungrounded_triplets_in_schemaless_fallback(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-schemaless-drop"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="They just didn't hold with such nonsense.")
+
+        fake_entities = [
+            {
+                "text": "MR_AND_MRS_DURSLEY",
+                "label": "PERSON",
+                "ontology_label": "PERSON",
+                "confidence": 0.99,
+                "candidate_labels": ["PERSON"],
+                "backend": "gliner2",
+            }
+        ]
+
+        async def fake_extract_relations_with_llm_async(**kwargs):
+            return (
+                [],
+                [],
+                {
+                    "raw_triplets": [
+                        {
+                            "source": "Mr. and Mrs. Dursley",
+                            "relation": "disbelieves_in",
+                            "target": "strange or mysterious things",
+                            "source_type": "Person",
+                            "target_type": "Concept",
+                            "confidence": 1.0,
+                            "evidence": "They just didn't hold with such nonsense.",
+                        }
+                    ],
+                    "triplet_decisions": [
+                        {
+                            "source": "Mr. and Mrs. Dursley",
+                            "relation": "disbelieves_in",
+                            "target": "strange or mysterious things",
+                            "source_type": "Person",
+                            "target_type": "Concept",
+                            "confidence": 1.0,
+                            "evidence": "They just didn't hold with such nonsense.",
+                            "kept": False,
+                            "drop_reason": "endpoint_not_grounded_in_hints",
+                            "source_grounded": False,
+                            "target_grounded": False,
+                        }
+                    ],
+                },
+            )
+
+        with patch("graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk", return_value=fake_entities), \
+             patch("graphgen.pipeline.entity_relation.extraction.extract_relations_with_llm_async", side_effect=fake_extract_relations_with_llm_async):
+            result = await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                SimpleNamespace(),
+                {"extraction": {"backend": "gliner2"}},
+                ["PERSON"],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["relation_count"], 0)
+        self.assertEqual(ctx.graph.nodes[chunk_id]["knowledge_triplets"], [])

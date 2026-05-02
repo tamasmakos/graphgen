@@ -103,6 +103,27 @@ def _likely_region_adjectival_conflict(tokens_a: tuple[str, ...], tokens_b: tupl
     return _likely_country_demonym_conflict(tokens_a[-1], tokens_b[-1])
 
 
+def _common_prefix_conflict(tokens_a: tuple[str, ...], tokens_b: tuple[str, ...]) -> bool:
+    if len(tokens_a) < 2 or len(tokens_b) < 2:
+        return False
+    if tokens_a[1:] != tokens_b[1:]:
+        return False
+
+    prefix_a = tokens_a[0]
+    prefix_b = tokens_b[0]
+    if prefix_a == prefix_b:
+        return False
+
+    shorter, longer = sorted((prefix_a, prefix_b), key=len)
+    if not longer.startswith(shorter):
+        return False
+
+    if len(longer) - len(shorter) > 2:
+        return False
+
+    return True
+
+
 
 def surface_forms_conflict(a: str, b: str) -> bool:
     norm_a = normalize_surface_form(a)
@@ -123,6 +144,9 @@ def surface_forms_conflict(a: str, b: str) -> bool:
         return True
 
     if _likely_region_adjectival_conflict(tokens_a, tokens_b):
+        return True
+
+    if _common_prefix_conflict(tokens_a, tokens_b):
         return True
 
     return False

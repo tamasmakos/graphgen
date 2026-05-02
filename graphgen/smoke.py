@@ -180,9 +180,9 @@ def _serialize_graph_for_graphml(graph: nx.DiGraph) -> nx.DiGraph:
     return clean_graph
 
 
-def _save_smoke_artifacts(ctx: PipelineContext, output_dir: str) -> None:
+def _save_smoke_artifacts(ctx: PipelineContext, output_dir: str, settings) -> None:
     create_output_directory(output_dir)
-    save_graph_schema(ctx.graph, output_dir)
+    save_graph_schema(ctx.graph, output_dir, schema_config=settings.schema_config)
 
     graph_path = os.path.join(output_dir, "knowledge_graph.graphml")
     clean_graph = _serialize_graph_for_graphml(ctx.graph)
@@ -241,7 +241,7 @@ async def run_local_smoke(input_dir: str, output_dir: str = "output_smoke", max_
     ctx.stats["extraction"] = extraction_stats
     ctx.stats["entity_resolution"] = {"merged_nodes": 0, "clusters_found": 0}
 
-    _save_smoke_artifacts(ctx, settings.infra.output_dir)
+    _save_smoke_artifacts(ctx, settings.infra.output_dir, settings)
 
     return {
         "documents_processed": lexical_stats.get("documents_processed", 0),

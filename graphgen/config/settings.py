@@ -10,6 +10,8 @@ Usage:
 - Edit this file for: Chunk sizes, Extraction rules, Thresholds.
 """
 
+import json
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -104,9 +106,14 @@ class ExtractionSettings(BaseSettings):
     Internal Extraction Logic.
     Tuned for the specific data domain. Not typically in .env.
     """
+    mode: str = "label_aware"  # options: "label_aware", "schemaless"
+    label_profiles_path: Optional[str] = None
+
     # Text Splitting
     chunk_size: int = 1200
     chunk_overlap: int = 100
+    segmentation_mode: str = "line"  # options: "line", "paragraph", "document"
+    min_segment_words: int = 0
 
     # Backend selection
     ner_backend: str = "llm"  # options: "gliner", "gliner2", "spacy", "llm", "dspy"
@@ -123,6 +130,7 @@ class ExtractionSettings(BaseSettings):
     gliner_preload: bool = True
     gliner2_top_k_labels: int = 5
     gliner2_label_descriptions: Dict[str, str] = Field(default_factory=dict)
+    label_selection_strategy: str = "hybrid"  # options: "hybrid", "lexical", "embedding"
     device: str = "auto" # "auto", "cuda", "cpu"
     use_onnx: bool = False
     # Entity labels (used by GLiNER, Spacy hints, and LLM categories)
@@ -147,6 +155,48 @@ class ExtractionSettings(BaseSettings):
         if isinstance(v, list):
             return [str(item) for item in v]
         return []
+
+    @field_validator("segmentation_mode", mode="before")
+    @classmethod
+    def validate_segmentation_mode(cls, v: Any) -> str:
+        mode = str(v or "line").strip().lower()
+        if mode not in {"line", "paragraph", "document"}:
+            raise ValueError("segmentation_mode must be one of: line, paragraph, document")
+        return mode
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def validate_extraction_mode(cls, v: Any) -> str:
+        mode = str(v or "label_aware").strip().lower()
+        if mode not in {"label_aware", "schemaless"}:
+            raise ValueError("mode must be one of: label_aware, schemaless")
+        return mode
+
+    @field_validator("label_profiles_path", mode="before")
+    @classmethod
+    def validate_label_profiles_path(cls, v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        text = str(v).strip()
+        return text or None
+
+    @field_validator("label_selection_strategy", mode="before")
+    @classmethod
+    def validate_label_selection_strategy(cls, v: Any) -> str:
+        strategy = str(v or "hybrid").strip().lower()
+        if strategy not in {"hybrid", "lexical", "embedding"}:
+            raise ValueError("label_selection_strategy must be one of: hybrid, lexical, embedding")
+        return strategy
+
+    @field_validator("min_segment_words", mode="before")
+    @classmethod
+    def validate_min_segment_words(cls, v: Any) -> int:
+        if v is None:
+            return 0
+        value = int(v)
+        if value < 0:
+            raise ValueError("min_segment_words must be >= 0")
+        return value
 
     # Ontology-based label extraction
     ontology: OntologySettings = Field(default_factory=OntologySettings)
@@ -306,6 +356,7 @@ class PipelineSettings(BaseSettings):
     community: CommunitySettings = Field(default_factory=CommunitySettings)
     test_mode: TestModeSettings = Field(default_factory=TestModeSettings)
     iterative: IterativeSettings = Field(default_factory=IterativeSettings)
+    schema_path: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -319,6 +370,14 @@ class PipelineSettings(BaseSettings):
         elif has_analysis and not has_analytics:
             values["analytics"] = values["analysis"]
         return values
+
+    @model_validator(mode="after")
+    def resolve_external_config_paths(self) -> "PipelineSettings":
+        if self.schema_path:
+            self.schema_path = str(Path(self.schema_path).resolve())
+        if self.extraction.label_profiles_path:
+            self.extraction.label_profiles_path = str(Path(self.extraction.label_profiles_path).resolve())
+        return self
     
     # Global/Runtime flags
     debug: bool = False
@@ -339,18 +398,24 @@ class PipelineSettings(BaseSettings):
         YAML takes precedence over Defaults. Environment takes precedence over YAML (for secrets).
         """
         from graphgen.config.loader import load_yaml_config
-        
+
+        config_path_obj = Path(config_path).resolve()
+
         # 1. Load YAML
-        yaml_config = load_yaml_config(config_path)
-        
-        # 2. Initialize with merged data (Env will still override fields if using BaseSettings standard behavior, 
-        # but to ensure YAML overrides defaults we pass it as kwargs)
-        # However, BaseSettings prefers Env > Init Kwargs > Defaults.
-        # So passing YAML as kwargs is correct for YAML > Defaults.
-        # But we also want Env > YAML.
-        
-        # Strategy:
-        # Create instance with YAML data.
-        # Pydantic BaseSettings automatic env loading will override if env vars exist.
-        
+        yaml_config = load_yaml_config(str(config_path_obj))
+
+        schema_path = yaml_config.get("schema_path")
+        if schema_path:
+            schema_file = (config_path_obj.parent / str(schema_path)).resolve()
+            with open(schema_file, "r", encoding="utf-8") as handle:
+                yaml_config["schema"] = json.load(handle)
+            yaml_config["schema_path"] = str(schema_file)
+
+        extraction_cfg = yaml_config.get("extraction") or {}
+        if isinstance(extraction_cfg, dict):
+            label_profiles_path = extraction_cfg.get("label_profiles_path")
+            if label_profiles_path:
+                extraction_cfg["label_profiles_path"] = str((config_path_obj.parent / str(label_profiles_path)).resolve())
+                yaml_config["extraction"] = extraction_cfg
+
         return cls(_env_file=env_file, **yaml_config)
