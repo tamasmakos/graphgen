@@ -2,15 +2,22 @@ import os
 import json
 import logging
 import networkx as nx
-from graphgen.config.schema import get_default_schema
+from graphgen.config.schema import GraphSchema, get_default_schema
 
 logger = logging.getLogger(__name__)
 
-def save_graph_schema(graph: nx.DiGraph, output_dir: str):
+def save_graph_schema(graph: nx.DiGraph, output_dir: str, schema_config=None):
     """
     Save the graph schema/metagraph to JSON.
     """
-    schema = get_default_schema()
+    if schema_config:
+        try:
+            schema = GraphSchema(**schema_config)
+        except Exception as exc:
+            logger.warning("Failed to parse explicit schema config, falling back to default schema: %s", exc)
+            schema = get_default_schema()
+    else:
+        schema = get_default_schema()
     schema_path = os.path.join(output_dir, "graph_schema.json")
     try:
         with open(schema_path, 'w') as f:

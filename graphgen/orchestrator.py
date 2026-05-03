@@ -380,7 +380,7 @@ class KnowledgePipeline:
         create_output_directory(output_dir)
         
         try:
-            save_graph_schema(ctx.graph, output_dir)
+            save_graph_schema(ctx.graph, output_dir, schema_config=self.settings.schema_config)
             
             # Save GraphML
             graph_path = os.path.join(output_dir, "knowledge_graph.graphml")

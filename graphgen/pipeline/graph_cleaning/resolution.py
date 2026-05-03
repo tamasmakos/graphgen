@@ -299,6 +299,17 @@ def _are_coreferent(a: str, b: str, threshold: float) -> bool:
     """
     Check if two strings are likely coreferent.
     """
+    norm_a = normalize_surface_form(a)
+    norm_b = normalize_surface_form(b)
+    if not norm_a or not norm_b:
+        return False
+
+    if surface_forms_conflict(norm_a, norm_b):
+        return False
+
+    if not are_potential_aliases(norm_a, norm_b):
+        return False
+
     # 1. Direct string similarity
     if _string_similarity(a, b) >= threshold:
         return True

@@ -12,7 +12,7 @@ Usage:
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict, Any
 
 try:
     from rdflib import Graph, URIRef, Literal
@@ -108,6 +108,15 @@ class OntologyLabelExtractor:
         
         # Fallback to first available label
         return str(labels[0])
+
+    def _get_comment(self, uri: URIRef) -> Optional[str]:
+        comments = list(self.graph.objects(uri, RDFS.comment))
+        if not comments:
+            return None
+        for comment in comments:
+            if isinstance(comment, Literal) and (comment.language == 'en' or not comment.language):
+                return str(comment)
+        return str(comments[0])
     
     def _extract_local_name(self, uri: str) -> str:
         """
@@ -199,6 +208,63 @@ class OntologyLabelExtractor:
         result = sorted(list(labels))
         logger.info(f"Extracted {len(result)} unique labels from ontology (top_level={top_level_only}, min_children={min_subclasses})")
         return result
+
+    def extract_profiles(
+        self,
+        include_local_names: bool = True,
+        top_level_only: bool = True,
+        min_subclasses: int = 0,
+    ) -> List[Dict[str, Any]]:
+        self._load_rdf_files()
+
+        profiles: Dict[str, Dict[str, Any]] = {}
+        all_classes = set(self.graph.subjects(RDF.type, OWL.Class)).union(
+                     set(self.graph.subjects(RDF.type, RDFS.Class)))
+        exclude_classes = {
+            OWL.Thing, OWL.Nothing, OWL.NamedIndividual,
+            RDFS.Resource, RDFS.Class, OWL.Class
+        }
+
+        for cls in all_classes:
+            from rdflib import BNode
+            if isinstance(cls, BNode) or cls in exclude_classes:
+                continue
+
+            cls_uri = str(cls)
+            if self.namespace_filter and not cls_uri.startswith(self.namespace_filter):
+                continue
+
+            parents = [p for p in self.graph.objects(cls, RDFS.subClassOf) if isinstance(p, URIRef) and p not in exclude_classes]
+            if top_level_only and parents:
+                continue
+
+            if min_subclasses > 0:
+                children = list(self.graph.subjects(RDFS.subClassOf, cls))
+                if len(children) < min_subclasses:
+                    continue
+
+            label = self._get_label(cls)
+            if not label and include_local_names:
+                local_name = self._extract_local_name(cls_uri)
+                if local_name and len(local_name) > 1:
+                    label = self._format_local_name(local_name)
+
+            if not label:
+                continue
+
+            aliases = sorted({label.strip().lower(), self._format_local_name(self._extract_local_name(cls_uri)).lower()})
+            comment = self._get_comment(cls)
+            standardized = self._format_local_name(label).upper().replace(' ', '_')
+            profiles[standardized] = {
+                'label': standardized,
+                'aliases': aliases,
+                'description': comment or f"Named entity or concept labeled {label.strip().lower()}.",
+                'source': 'ontology',
+                'uri': cls_uri,
+                'parent_labels': sorted({self._format_local_name(self._get_label(parent) or self._extract_local_name(str(parent))).upper().replace(' ', '_') for parent in parents}),
+            }
+
+        return sorted(profiles.values(), key=lambda item: item['label'])
     
     def _format_local_name(self, name: str) -> str:
         """
@@ -259,3 +325,18 @@ def extract_ontology_labels(
     """
     extractor = OntologyLabelExtractor(ontology_dir, namespace_filter)
     return extractor.extract_labels(include_local_names)
+
+
+def extract_ontology_profiles(
+    ontology_dir: str,
+    namespace_filter: Optional[str] = None,
+    include_local_names: bool = True,
+    top_level_only: bool = True,
+    min_subclasses: int = 0,
+) -> List[Dict[str, Any]]:
+    extractor = OntologyLabelExtractor(ontology_dir, namespace_filter)
+    return extractor.extract_profiles(
+        include_local_names=include_local_names,
+        top_level_only=top_level_only,
+        min_subclasses=min_subclasses,
+    )
