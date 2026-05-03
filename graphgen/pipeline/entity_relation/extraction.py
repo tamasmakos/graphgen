@@ -355,6 +355,7 @@ async def _extract_entities_for_chunk(
 def _build_relation_eligible_entities(gliner_entities: List[Dict[str, Any]]) -> List[str]:
     eligible = []
     fallback = []
+    records = []
 
     for entity in gliner_entities or []:
         text = standardize_label(entity.get('text', ''))
@@ -364,12 +365,33 @@ def _build_relation_eligible_entities(gliner_entities: List[Dict[str, Any]]) -> 
         if not text:
             continue
 
+        record = {
+            'text': text,
+            'ontology_label': ontology_label,
+            'confidence': confidence,
+            'tokens': tuple(token for token in text.split('_') if token),
+        }
+        records.append(record)
         fallback.append(text)
+
+    multi_token_records = [record for record in records if len(record['tokens']) > 1]
+
+    for record in records:
+        text = record['text']
+        ontology_label = record['ontology_label']
+        confidence = record['confidence']
+        tokens = record['tokens']
 
         if len(text) <= 3 and '_' not in text and ontology_label in {'PERSON', 'ORGANIZATION', 'LOCATION'}:
             continue
-        if ontology_label == 'PERSON' and '_' not in text:
-            continue
+        if len(tokens) == 1 and ontology_label == 'PERSON':
+            if any(
+                text in other['tokens']
+                and other['text'] != text
+                and other['ontology_label'] == ontology_label
+                for other in multi_token_records
+            ):
+                continue
         if ontology_label == 'EVENT' and confidence < 0.5:
             continue
         if ontology_label == 'ORGANIZATION' and confidence < 0.6:
@@ -537,6 +559,10 @@ async def process_extraction_task(
                 entities=discovered_entities, 
                 abstract_concepts=node_labels 
             )
+            extraction_config = config.get('extraction', {})
+            if hasattr(extraction_config, 'model_dump'):
+                extraction_config = extraction_config.model_dump()
+            extraction_mode = extraction_config.get('mode', 'label_aware')
             fallback_used = False
             raw_triplets = relation_diagnostics.get('raw_triplets', []) if isinstance(relation_diagnostics, dict) else []
             triplet_decisions = relation_diagnostics.get('triplet_decisions', []) if isinstance(relation_diagnostics, dict) else []
@@ -555,7 +581,7 @@ async def process_extraction_task(
                 and decision.get('source_grounded')
                 and decision.get('target_grounded')
             ]
-            if not raw_relations and fallback_triplets:
+            if extraction_mode == 'schemaless' and not raw_relations and fallback_triplets:
                 raw_relations = postprocess_triplets(fallback_triplets)
                 raw_nodes = build_nodes_from_relations(raw_relations)
                 fallback_used = bool(raw_relations)

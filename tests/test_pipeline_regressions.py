@@ -263,6 +263,41 @@ class ExtractionRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entities, [])
         mock_get_gliner_model.assert_not_called()
 
+    async def test_process_extraction_task_uses_candidate_labels_when_ner_finds_no_labels(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-candidate-fallback"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="Harry studied at Hogwarts.")
+
+        class FakeExtractor:
+            async def extract_relations(self, **kwargs):
+                self.kwargs = kwargs
+                return ([], [])
+
+        extractor = FakeExtractor()
+
+        with patch(
+            "graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk",
+            return_value=([], {"candidate_labels": ["PERSON", "SCHOOL"]}),
+        ):
+            await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                extractor,
+                {
+                    "extraction": {
+                        "backend": "gliner2",
+                        "diagnostic_mode": True,
+                        "diagnostic_output_subdir": "diag-test",
+                    },
+                    "infra": {"output_dir": tempfile.gettempdir()},
+                },
+                ["PERSON", "SCHOOL", "LOCATION", "OBJECT"],
+            )
+
+        self.assertEqual(extractor.kwargs["abstract_concepts"], ["PERSON", "SCHOOL", "LOCATION", "OBJECT"])
+
     async def test_extract_all_entities_relations_uses_schemaless_mode_without_label_profiles(self):
         deps = PipelineContext(graph=nx.DiGraph())
         deps.graph.add_node("chunk-1", node_type="CHUNK")
@@ -482,6 +517,7 @@ class DSPyConfigRegressionTests(unittest.TestCase):
     def test_endpoint_matches_hint_allows_hint_substrings_for_compound_endpoints(self):
         self.assertTrue(_endpoint_matches_hint("PRIME_MINISTER_OF_ITALY", ["ITALY", "MARIO_DRAGHI"]))
         self.assertTrue(_endpoint_matches_hint("PRESIDENT_OF_THE_EUROPEAN_CENTRAL_BANK", ["EUROPEAN_CENTRAL_BANK"]))
+        self.assertTrue(_endpoint_matches_hint("WIZARD_SCHOOL", ["school"]))
         self.assertFalse(_endpoint_matches_hint("COUNTRY", ["ITALY", "MARIO_DRAGHI"]))
 
     def test_grounded_relation_endpoint_accepts_entity_hint(self):
@@ -499,6 +535,42 @@ class DSPyConfigRegressionTests(unittest.TestCase):
     def test_relation_endpoints_in_hints_requires_both_endpoints(self):
         self.assertTrue(_relation_endpoints_in_hints("ENERGY_DEPENDENCE", "KREMLIN", ["ENERGY_DEPENDENCE", "KREMLIN"]))
         self.assertFalse(_relation_endpoints_in_hints("PRIME_MINISTER", "COUNTRY", ["PRIME_MINISTER"]))
+
+    @patch("graphgen.pipeline.entity_relation.extractors.dspy.configure")
+    @patch("graphgen.pipeline.entity_relation.extractors.dspy.LM")
+    def test_dspy_extractor_keeps_relation_when_one_endpoint_matches_hint_and_other_is_evidence_grounded(self, mock_lm, mock_configure):
+        mock_lm.return_value = object()
+        extractor = DSPyExtractor({"infra": {"groq_api_key": "fake-key"}})
+
+        class FakeModule:
+            def __call__(self, text, ontology_classes=None, entity_hints=None):
+                return SimpleNamespace(
+                    triplets=[
+                        {
+                            "source": "Europe",
+                            "relation": "needs",
+                            "target": "pragmatic federalism",
+                            "source_type": "Place",
+                            "target_type": "Policy or Process",
+                            "confidence": 1.0,
+                            "evidence": "Europe needs pragmatic federalism.",
+                        }
+                    ]
+                )
+
+        extractor.module = FakeModule()
+        relations, nodes, diagnostics = asyncio.run(
+            extractor.extract_relations(
+                text="Europe needs pragmatic federalism.",
+                entities=["EUROPE"],
+                abstract_concepts=["PLACE", "POLICY_OR_PROCESS"],
+            )
+        )
+
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0][:3], ("EUROPE", "NEEDS", "PRAGMATIC_FEDERALISM"))
+        self.assertTrue(diagnostics["triplet_decisions"][0]["kept"])
+        mock_configure.assert_called_once()
 
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.configure")
     @patch("graphgen.pipeline.entity_relation.extractors.dspy.LM")
@@ -1200,6 +1272,14 @@ class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
         eligible = _build_relation_eligible_entities(entities)
         self.assertEqual(sorted(eligible), ["US", "WE"])
 
+    def test_build_relation_eligible_entities_keeps_single_token_person_when_not_fragment(self):
+        entities = [
+            {"text": "HARRY", "ontology_label": "PERSON", "confidence": 0.97},
+            {"text": "HOGWARTS", "ontology_label": "LOCATION", "confidence": 0.93},
+        ]
+        eligible = _build_relation_eligible_entities(entities)
+        self.assertEqual(eligible, ["HARRY", "HOGWARTS"])
+
     async def test_process_extraction_task_allows_schemaless_relation_extraction_without_entity_labels(self):
         ctx = PipelineContext()
         chunk_id = "chunk-no-labels"
@@ -1373,7 +1453,7 @@ class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
                 task,
                 asyncio.Semaphore(1),
                 SimpleNamespace(),
-                {"extraction": {"backend": "gliner2", "diagnostic_mode": True, "diagnostic_output_subdir": "diag-test"}, "infra": {"output_dir": tempfile.gettempdir()}},
+                {"extraction": {"backend": "gliner2", "mode": "schemaless", "diagnostic_mode": True, "diagnostic_output_subdir": "diag-test"}, "infra": {"output_dir": tempfile.gettempdir()}},
                 ["PERSON", "SCHOOL"],
             )
 
@@ -1450,3 +1530,143 @@ class ExtractionTaskAccountingRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["relation_count"], 0)
         self.assertEqual(ctx.graph.nodes[chunk_id]["knowledge_triplets"], [])
+
+    async def test_process_extraction_task_does_not_readd_dropped_triplets_outside_schemaless_mode(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-label-aware-drop"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="Europe needs pragmatic federalism.")
+
+        fake_entities = [
+            {
+                "text": "EUROPE",
+                "label": "PLACE",
+                "ontology_label": "PLACE",
+                "confidence": 0.95,
+                "candidate_labels": ["PLACE", "POLICY_OR_PROCESS"],
+                "backend": "gliner2",
+            }
+        ]
+
+        async def fake_extract_relations_with_llm_async(**kwargs):
+            return (
+                [],
+                [],
+                {
+                    "raw_triplets": [
+                        {
+                            "source": "Europe",
+                            "relation": "needs",
+                            "target": "pragmatic federalism",
+                            "source_type": "Place",
+                            "target_type": "Policy or Process",
+                            "confidence": 1.0,
+                            "evidence": "Europe needs pragmatic federalism.",
+                        }
+                    ],
+                    "triplet_decisions": [
+                        {
+                            "source": "Europe",
+                            "relation": "needs",
+                            "target": "pragmatic federalism",
+                            "source_type": "Place",
+                            "target_type": "Policy or Process",
+                            "confidence": 1.0,
+                            "evidence": "Europe needs pragmatic federalism.",
+                            "kept": False,
+                            "drop_reason": "endpoint_not_grounded_in_hints",
+                            "source_grounded": True,
+                            "target_grounded": True,
+                        }
+                    ],
+                },
+            )
+
+        with patch("graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk", return_value=fake_entities), \
+             patch("graphgen.pipeline.entity_relation.extraction.extract_relations_with_llm_async", side_effect=fake_extract_relations_with_llm_async):
+            result = await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                SimpleNamespace(),
+                {"extraction": {"backend": "gliner2", "mode": "label_aware"}},
+                ["PLACE", "POLICY_OR_PROCESS"],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["relation_count"], 0)
+        self.assertEqual(ctx.graph.nodes[chunk_id]["knowledge_triplets"], [])
+
+    async def test_process_extraction_task_keeps_grounded_relation_when_one_endpoint_is_hint_and_other_is_evidence_grounded(self):
+        ctx = PipelineContext()
+        chunk_id = "chunk-soft-grounding"
+        ctx.graph.add_node(chunk_id, node_type="CHUNK")
+        task = ChunkExtractionTask(chunk_id=chunk_id, chunk_text="Europe needs pragmatic federalism.")
+
+        fake_entities = [
+            {
+                "text": "EUROPE",
+                "label": "PLACE",
+                "ontology_label": "PLACE",
+                "confidence": 0.95,
+                "candidate_labels": ["PLACE", "POLICY_OR_PROCESS"],
+                "backend": "gliner2",
+            }
+        ]
+
+        async def fake_extract_relations_with_llm_async(**kwargs):
+            return (
+                [
+                    ("EUROPE", "NEEDS", "PRAGMATIC_FEDERALISM", {"confidence": 1.0, "evidence": "Europe needs pragmatic federalism."})
+                ],
+                [
+                    {"id": "EUROPE", "type": "PLACE", "properties": {}},
+                    {"id": "PRAGMATIC_FEDERALISM", "type": "POLICY_OR_PROCESS", "properties": {}},
+                ],
+                {
+                    "raw_triplets": [
+                        {
+                            "source": "Europe",
+                            "relation": "needs",
+                            "target": "pragmatic federalism",
+                            "source_type": "Place",
+                            "target_type": "Policy or Process",
+                            "confidence": 1.0,
+                            "evidence": "Europe needs pragmatic federalism.",
+                        }
+                    ],
+                    "triplet_decisions": [
+                        {
+                            "source": "Europe",
+                            "relation": "needs",
+                            "target": "pragmatic federalism",
+                            "source_type": "Place",
+                            "target_type": "Policy or Process",
+                            "confidence": 1.0,
+                            "evidence": "Europe needs pragmatic federalism.",
+                            "kept": True,
+                            "drop_reason": None,
+                            "source_grounded": True,
+                            "target_grounded": True,
+                        }
+                    ],
+                },
+            )
+
+        with patch("graphgen.pipeline.entity_relation.extraction._extract_entities_for_chunk", return_value=fake_entities), \
+             patch("graphgen.pipeline.entity_relation.extraction.extract_relations_with_llm_async", side_effect=fake_extract_relations_with_llm_async):
+            result = await process_extraction_task(
+                ctx,
+                task,
+                asyncio.Semaphore(1),
+                SimpleNamespace(),
+                {"extraction": {"backend": "gliner2", "mode": "label_aware"}},
+                ["PLACE", "POLICY_OR_PROCESS"],
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["relation_count"], 1)
+        self.assertEqual(
+            ctx.graph.nodes[chunk_id]["knowledge_triplets"][0][:3],
+            ("EUROPE", "NEEDS", "PRAGMATIC_FEDERALISM"),
+        )
