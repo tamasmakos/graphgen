@@ -11,7 +11,7 @@ Usage:
 """
 
 from typing import List, Optional, Dict, Any
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from graphgen.config.schema import get_default_schema
 
@@ -29,7 +29,11 @@ class InfrastructureSettings(BaseSettings):
     neo4j_password: str = Field("password", alias="NEO4J_PASSWORD")
     
     # --- API Keys ---
-    groq_api_key: Optional[SecretStr] = Field(None, alias="GROQ_API_KEY")
+    # OpenRouter is the sole LLM gateway. Accept the correctly-spelled var and
+    # the commonly-mistyped "OPENROUTE_API_KEY".
+    openrouter_api_key: Optional[SecretStr] = Field(
+        None, validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPENROUTE_API_KEY")
+    )
     openai_api_key: Optional[SecretStr] = Field(None, alias="OPENAI_API_KEY")
     
     # --- Filesystem (Docker Volumes) ---
@@ -37,6 +41,7 @@ class InfrastructureSettings(BaseSettings):
     output_dir: str = Field("/app/output", alias="OUTPUT_DIR")
     
     clean_start: bool = Field(True, alias="CLEAN_START")
+    neo4j_upload_enabled: bool = Field(True, alias="NEO4J_UPLOAD_ENABLED")
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -49,9 +54,10 @@ class LLMSettings(BaseSettings):
     Model Configuration.
     Defaults are set here but can be overridden via .env for experimentation.
     """
-    base_model: str = Field("llama-3.1-8b-instant", alias="GROQ_MODEL")
-    extraction_model: str = Field("meta-llama/llama-4-scout-17b-16e-instruct", alias="EXTRACTION_MODEL")
-    summarization_model: str = Field("llama-3.1-8b-instant", alias="SUMMARISATION_MODEL")
+    # OpenRouter model ids (provider/model). See https://openrouter.ai/models
+    base_model: str = Field("meta-llama/llama-3.1-8b-instruct", alias="OPENROUTER_MODEL")
+    extraction_model: str = Field("meta-llama/llama-3.3-70b-instruct", alias="EXTRACTION_MODEL")
+    summarization_model: str = Field("meta-llama/llama-3.3-70b-instruct", alias="SUMMARIZATION_MODEL")
     
     temperature: float = 0.0
     max_retries: int = 3
@@ -78,25 +84,15 @@ class OntologySettings(BaseSettings):
     min_subclasses: int = 0  # Only include classes with at least this many subclasses
     include_local_names: bool = True  # Use URI local names as fallback
 
-    model_config = SettingsConfigDict(
-        populate_by_name=True,
-        extra="ignore"
-    )
-
-
-class IterativeSettings(BaseSettings):
-    """
-    Iterative Experiment Configuration.
-    """
-    enabled: bool = Field(False, alias="ITERATIVE_ENABLED")
-    batch_size: int = Field(100, alias="ITERATIVE_BATCH_SIZE")
-    iterations: int = Field(5, alias="ITERATIVE_ITERATIONS")
-    random_seed: int = Field(42, alias="ITERATIVE_RANDOM_SEED")
+    # Semantic per-chunk ontology matching (backend: "ontology_dspy")
+    max_labels: int = 60  # Max class labels passed to the LLM per matched ontology
+    match_threshold: float = 0.10  # Min cosine sim to accept an ontology match
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
         extra="ignore"
     )
+
 
 
 class ExtractionSettings(BaseSettings):
@@ -182,40 +178,32 @@ class EmbeddingSettings(BaseSettings):
 
 class AnalyticsSettings(BaseSettings):
     """
-    Advanced Analytics & Visualization Configuration.
-    Controls the generation of academic-quality reports, interactive graphs,
-    and statistical evaluations (modularity, KGE models).
+    Analytics & Visualization Configuration.
+
+    Controls the generation of the thesis analytics report (modularity
+    comparison, Node2Vec permutation test, similarity distribution) and
+    optional visualizations.
     """
     enabled: bool = Field(False, alias="ANALYTICS_ENABLED")
     output_dir: str = "analytics_reports"
-    
-    # Topic Separation & Modularity
-    topic_separation_test: bool = True  # Legacy flag, kept for backward compatibility logic if needed
-    # Silhouette analysis thresholds (used in topic_separation.py)
-    # These control when silhouette is considered mathematically valid and
-    # practically interpretable. See `run_silhouette_analysis` for details.
-    silhouette_min_samples: int = 3
-    silhouette_min_samples_per_cluster: int = 2
-    silhouette_max_clusters_ratio: float = 0.5  # k <= n_samples * ratio
-    
+
     # Visualization
     visualization: Dict[str, Any] = Field(
         default_factory=lambda: {
-            "interactive": True, 
-            "heatmap": True
+            "interactive": True,
+            "heatmap": True,
         }
     )
 
-    # Thesis/provenance outputs
+    # Provenance & artifact outputs
     outputs_subdir: str = "thesis_outputs"
     save_provenance: bool = True
-    save_sampling_manifest: bool = True
-    save_checkpoints: bool = True
-    save_topic_separation_inputs: bool = True
-    save_silhouette_samples: bool = True
-    save_anova_diagnostics: bool = True
-    save_manova_details: bool = True
     save_raw_overlap_matrix: bool = True
+
+    # Optional path to a JSON file of ground-truth themes (list of
+    # {id, name, description}) for quantitative topic validation.  When
+    # None, the built-in EPRS theme set is used.
+    ground_truth_themes_path: Optional[str] = None
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -226,12 +214,12 @@ class AnalyticsSettings(BaseSettings):
 class TestModeSettings(BaseSettings):
     """
     Test Mode Configuration.
-    
-    When enabled, limits the number of documents processed for faster testing.
-    Set max_documents to 0 to process all documents (no limit).
+
+    When enabled, limits the total number of segments processed across all
+    documents. Set max_segments to 0 to process all segments (no limit).
     """
     enabled: bool = False  # Toggle test mode
-    max_documents: int = 0  # 0 = no limit, process all documents
+    max_segments: int = 0  # 0 = no limit, process all segments
 
     model_config = SettingsConfigDict(
         populate_by_name=True,
@@ -271,13 +259,10 @@ class PipelineSettings(BaseSettings):
     extraction: ExtractionSettings = Field(default_factory=ExtractionSettings)
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
-    # kge field removed
-    analysis: AnalyticsSettings = Field(default_factory=AnalyticsSettings) # Alias for backward compatibility or direct usage
     analytics: AnalyticsSettings = Field(default_factory=AnalyticsSettings)
     community: CommunitySettings = Field(default_factory=CommunitySettings)
     test_mode: TestModeSettings = Field(default_factory=TestModeSettings)
-    iterative: IterativeSettings = Field(default_factory=IterativeSettings)
-    
+
     # Global/Runtime flags
     debug: bool = False
     
@@ -293,22 +278,29 @@ class PipelineSettings(BaseSettings):
     @classmethod
     def load(cls, config_path: str = "config.yaml", env_file: str = ".env") -> "PipelineSettings":
         """
-        Factory method to load settings from YAML and Environment.
-        YAML takes precedence over Defaults. Environment takes precedence over YAML (for secrets).
+        Factory method to load settings from YAML and environment variables.
+
+        Priority (highest first): environment variables > .env file > config.yaml > field defaults.
+
+        Each nested settings class is constructed via its own constructor so that
+        BaseSettings env-var reading fires correctly for each sub-model. Passing nested
+        dicts through PipelineSettings(**yaml_dict) coerces them via model_validate(),
+        which bypasses the BaseSettings env-reading machinery for those nested classes.
         """
         from graphgen.config.loader import load_yaml_config
-        
-        # 1. Load YAML
+
         yaml_config = load_yaml_config(config_path)
-        
-        # 2. Initialize with merged data (Env will still override fields if using BaseSettings standard behavior, 
-        # but to ensure YAML overrides defaults we pass it as kwargs)
-        # However, BaseSettings prefers Env > Init Kwargs > Defaults.
-        # So passing YAML as kwargs is correct for YAML > Defaults.
-        # But we also want Env > YAML.
-        
-        # Strategy:
-        # Create instance with YAML data.
-        # Pydantic BaseSettings automatic env loading will override if env vars exist.
-        
-        return cls(_env_file=env_file, **yaml_config)
+
+        nested: Dict[str, Any] = {
+            "infra": InfrastructureSettings(**(yaml_config.pop("infra", None) or {})),
+            "llm": LLMSettings(**(yaml_config.pop("llm", None) or {})),
+            "extraction": ExtractionSettings(**(yaml_config.pop("extraction", None) or {})),
+            "processing": ProcessingSettings(**(yaml_config.pop("processing", None) or {})),
+            "embedding": EmbeddingSettings(**(yaml_config.pop("embedding", None) or {})),
+            "analytics": AnalyticsSettings(**(yaml_config.pop("analytics", None) or {})),
+            "community": CommunitySettings(**(yaml_config.pop("community", None) or {})),
+            "test_mode": TestModeSettings(**(yaml_config.pop("test_mode", None) or {})),
+        }
+
+        # yaml_config now only contains top-level scalar keys (e.g. debug).
+        return cls(_env_file=env_file, **nested, **yaml_config)

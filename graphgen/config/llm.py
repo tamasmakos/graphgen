@@ -1,92 +1,128 @@
 """
-Centralized LLM Configuration for Knowledge Graph Pipeline.
+Centralized LLM Configuration for the Knowledge Graph Pipeline.
 
-Simple, single-source configuration for Groq LLM client.
+All LLM access goes through OpenRouter (https://openrouter.ai), an
+OpenAI-compatible gateway.  This module is the single source of truth for:
+
+* resolving the model name / temperature / API key from config,
+* configuring the global DSPy LM (used by the extractor and summarizer),
+* building a LangChain chat model (used by the summarization path).
 """
 
 import logging
-from typing import Dict, Any, List
-from groq import Groq
-from langchain_groq import ChatGroq
+import os
+from typing import Any, Dict, Optional
+
+import dspy
+from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
 
+OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 
-def get_model_name(config: Dict[str, Any], purpose: str = None) -> str:
-    """
-    Get configured model name.
-    Strictly uses config dictionary.
-    """
-    if not config or 'llm' not in config:
-         raise ValueError("Configuration missing 'llm' section")
 
-    llm_cfg = config['llm']
-    # Ensure we are working with a dict (in case it wasn't dumped)
-    if hasattr(llm_cfg, 'model_dump'):
+def get_model_name(config: Dict[str, Any], purpose: Optional[str] = None) -> str:
+    """Resolve the OpenRouter model id for a given purpose."""
+    if not config or "llm" not in config:
+        raise ValueError("Configuration missing 'llm' section")
+
+    llm_cfg = config["llm"]
+    if hasattr(llm_cfg, "model_dump"):
         llm_cfg = llm_cfg.model_dump()
-        
-    if purpose == 'extraction':
-        return llm_cfg.get('extraction_model') or llm_cfg.get('base_model')
-    elif purpose == 'summarization':
-        return llm_cfg.get('summarization_model') or llm_cfg.get('base_model')
-    elif purpose == 'synthetic':
-        return llm_cfg.get('base_model')
-    
-    # General fallback
-    return llm_cfg.get('base_model')
+
+    if purpose == "extraction":
+        return llm_cfg.get("extraction_model") or llm_cfg.get("base_model")
+    if purpose == "summarization":
+        return llm_cfg.get("summarization_model") or llm_cfg.get("base_model")
+    if purpose == "synthetic":
+        return llm_cfg.get("base_model")
+    return llm_cfg.get("base_model")
 
 
 def get_temperature(config: Dict[str, Any]) -> float:
-    """
-    Get LLM temperature setting.
-    """
-    if not config or 'llm' not in config:
+    """Get the configured LLM temperature (default 0.0)."""
+    if not config or "llm" not in config:
         return 0.0
-
-    llm_cfg = config['llm']
-    if hasattr(llm_cfg, 'model_dump'):
+    llm_cfg = config["llm"]
+    if hasattr(llm_cfg, "model_dump"):
         llm_cfg = llm_cfg.model_dump()
-    return float(llm_cfg.get('temperature', 0.0))
+    return float(llm_cfg.get("temperature", 0.0))
 
 
-def get_langchain_llm(config: Dict[str, Any], purpose: str = None) -> ChatGroq:
+def get_openrouter_api_key(config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Resolve the OpenRouter API key from config or environment.
+
+    Accepts both the correctly-spelled ``OPENROUTER_API_KEY`` and the
+    commonly-mistyped ``OPENROUTE_API_KEY`` environment variables.
     """
-    Get LangChain-compatible Groq LLM for use with LangChain tools.
-    
-    Used by summarization and retrieval services.
-    
-    Args:
-        config: Config dictionary
-        purpose: Optional purpose ('extraction', 'summarization')
-        
-    Returns:
-        ChatGroq instance compatible with LangChain tools
+    if config:
+        infra = config.get("infra", {})
+        if hasattr(infra, "model_dump"):
+            infra = infra.model_dump()
+        llm_cfg = config.get("llm", {})
+        if hasattr(llm_cfg, "model_dump"):
+            llm_cfg = llm_cfg.model_dump()
+        val = infra.get("openrouter_api_key") or llm_cfg.get("openrouter_api_key")
+        if val:
+            return val.get_secret_value() if hasattr(val, "get_secret_value") else str(val)
+
+    return os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENROUTE_API_KEY")
+
+
+def configure_dspy_lm(
+    config: Dict[str, Any],
+    purpose: Optional[str] = None,
+    max_tokens: int = 2048,
+) -> str:
+    """Configure the global DSPy LM to use OpenRouter; return the model id.
+
+    Shared by the entity extractor and the community summarizer.  litellm
+    (which DSPy wraps) routes the ``openrouter/`` model prefix to the
+    OpenRouter endpoint.
     """
     model = get_model_name(config, purpose=purpose)
     temperature = get_temperature(config)
-    
-    api_key = None
-    if config and 'infra' in config:
-        infra = config['infra']
-        # Handle Pydantic object or dict
-        if hasattr(infra, 'model_dump'):
-            infra = infra.model_dump()
-            
-        api_key_val = infra.get('groq_api_key')
-        if api_key_val:
-            # Handle SecretStr if it hasn't been effectively serialized to str yet
-            if hasattr(api_key_val, 'get_secret_value'):
-                api_key = api_key_val.get_secret_value()
-            else:
-                api_key = str(api_key_val)
+    api_key = get_openrouter_api_key(config)
 
     if not api_key:
-        raise ValueError("GROQ_API_KEY not found in configuration")
-    
-    return ChatGroq(
+        raise ValueError(
+            "OpenRouter API key not found (set OPENROUTER_API_KEY in .env)."
+        )
+
+    # litellm uses the 'openrouter/<model>' prefix to select the provider.
+    litellm_model = model if model.startswith("openrouter/") else f"openrouter/{model}"
+
+    try:
+        lm = dspy.LM(
+            model=litellm_model,
+            api_key=api_key,
+            api_base=OPENROUTER_API_BASE,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        dspy.configure(lm=lm)
+        logger.info("Configured DSPy for OpenRouter with model %s", litellm_model)
+    except Exception as e:
+        logger.warning("Failed to configure DSPy LM: %s", e)
+
+    return model
+
+
+def get_langchain_llm(config: Dict[str, Any], purpose: Optional[str] = None) -> ChatOpenAI:
+    """Build a LangChain chat model backed by OpenRouter.
+
+    Used by the summarization path (``llm.ainvoke(...)``).
+    """
+    model = get_model_name(config, purpose=purpose)
+    temperature = get_temperature(config)
+    api_key = get_openrouter_api_key(config)
+
+    if not api_key:
+        raise ValueError("OpenRouter API key not found (set OPENROUTER_API_KEY in .env).")
+
+    return ChatOpenAI(
         model=model,
         temperature=temperature,
+        api_key=api_key,
+        base_url=OPENROUTER_API_BASE,
     )
-
-
-

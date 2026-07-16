@@ -10,7 +10,8 @@ spacy
 langchain-core
 langchain-text-splitters
 langchain-experimental
-langchain-groq
+langchain-openai
+openai
 dspy
 tiktoken
 neo4j
