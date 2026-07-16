@@ -95,11 +95,21 @@ async def process_single_segment(
         
         return {"chunk_count": chunk_count, "segment_id": segment.segment_id}
 
-async def add_segments_to_graph(deps: PipelineContext, segments: List[SegmentData], doc_id: str, config: Dict[str, Any] = None, schema: GraphSchema = None) -> Dict[str, Any]:
+async def add_segments_to_graph(
+    deps: PipelineContext,
+    segments: List[SegmentData],
+    doc_id: str,
+    config: Dict[str, Any] = None,
+    schema: GraphSchema = None,
+    max_segments: int = 0,
+) -> Dict[str, Any]:
     config = config or {}
     chunk_count = 0
     segment_count = 0
-    
+
+    if max_segments > 0:
+        segments = segments[:max_segments]
+
     # Get max_concurrent from config for controlled parallelization
     max_concurrent = get_max_concurrent(config, default=8)
     semaphore = asyncio.Semaphore(max_concurrent)
@@ -138,7 +148,15 @@ async def add_segments_to_graph(deps: PipelineContext, segments: List[SegmentDat
     
     return {"segments_count": segment_count, "chunks_count": chunk_count, "errors": errors}
 
-async def process_single_document_lexical(deps: PipelineContext, filename: str, input_dir: str, config: Dict[str, Any] = None, schema: GraphSchema = None, parser: Any = None) -> Dict[str, Any]:
+async def process_single_document_lexical(
+    deps: PipelineContext,
+    filename: str,
+    input_dir: str,
+    config: Dict[str, Any] = None,
+    schema: GraphSchema = None,
+    parser: Any = None,
+    max_segments: int = 0,
+) -> Dict[str, Any]:
     """Process a single document."""
     config = config or {}
     
@@ -211,7 +229,7 @@ async def process_single_document_lexical(deps: PipelineContext, filename: str, 
                     metadata={}
                 ))
         
-        segments_result = await add_segments_to_graph(deps, segments, doc_id, config, schema=schema)
+        segments_result = await add_segments_to_graph(deps, segments, doc_id, config, schema=schema, max_segments=max_segments)
         
         # Update segment count
         if deps.graph.has_node(doc_id):
@@ -255,28 +273,36 @@ async def build_lexical_graph(deps: PipelineContext, input_dir: str, config: Dic
             filenames = sorted(f for f in all_files if f.endswith('.txt'))
             logger.info(f"Found {len(filenames)} files to process")
         
-        # Apply test_mode document limit if configured
+        # Apply test_mode segment limit if configured
         test_mode_cfg = config.get('test_mode', {})
         if hasattr(test_mode_cfg, 'model_dump'):
             test_mode_cfg = test_mode_cfg.model_dump()
-        
+
         test_mode_enabled = test_mode_cfg.get('enabled', False)
-        max_documents = test_mode_cfg.get('max_documents', 0)
-        
-        if test_mode_enabled and max_documents > 0 and len(filenames) > max_documents:
-            logger.info(f"Test mode enabled: limiting to {max_documents} documents (from {len(filenames)} available)")
-            filenames = filenames[:max_documents]
-        
+        max_segments = test_mode_cfg.get('max_segments', 0)
+
+        if test_mode_enabled and max_segments > 0:
+            logger.info(f"Test mode enabled: limiting to {max_segments} total segments across all documents")
+
+        segments_processed = 0
         for filename in filenames:
-                
-            doc_result = await process_single_document_lexical(deps, filename, input_dir, config, schema=schema)
-                
+            remaining = max(0, max_segments - segments_processed) if (test_mode_enabled and max_segments > 0) else 0
+
+            doc_result = await process_single_document_lexical(
+                deps, filename, input_dir, config, schema=schema, max_segments=remaining
+            )
+
             results["documents_processed"] += 1
             results["total_segments"] += doc_result.get("segments_added", 0)
             results["total_chunks"] += doc_result.get("chunks_added", 0)
-            
+            segments_processed += doc_result.get("segments_added", 0)
+
             if doc_result.get("errors"):
                 results["errors"].extend(doc_result["errors"])
+
+            if test_mode_enabled and max_segments > 0 and segments_processed >= max_segments:
+                logger.info(f"Test mode: reached segment limit of {max_segments}, stopping after {results['documents_processed']} document(s)")
+                break
                 
         return results
         

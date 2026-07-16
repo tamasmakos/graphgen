@@ -17,57 +17,11 @@ class DSPySummarizer:
         self.module = CommunitySummarizerModule()
 
     def _configure_dspy(self):
-        """Configure DSPy LM (shared logic with entity extractor)."""
-        llm_config = self.config.get('llm', {})
-        if hasattr(llm_config, 'model_dump'):
-            llm_config = llm_config.model_dump()
-            
-        # Try to find the best model name from config
-        model = llm_config.get('summarization_model') or llm_config.get('base_model') or llm_config.get('model') or 'gpt-4o'
-        
-        # Check for Groq API Key
-        groq_api_key = None
-        infra_config = self.config.get('infra', {})
-        if hasattr(infra_config, 'model_dump'):
-            infra_config = infra_config.model_dump()
-            
-        val = infra_config.get('groq_api_key') or llm_config.get('groq_api_key')
-        if val:
-             if hasattr(val, 'get_secret_value'):
-                 groq_api_key = val.get_secret_value()
-             else:
-                 groq_api_key = str(val)
-        
-        if not groq_api_key:
-            groq_api_key = os.environ.get('GROQ_API_KEY')
+        """Configure the global DSPy LM for OpenRouter (summarization purpose)."""
+        from graphgen.config.llm import configure_dspy_lm
 
-        # Determine provider and configure
-        try:
-             if groq_api_key:
-                 logger.info(f"Configuring DSPy for Groq with model {model}")
-                 lm = dspy.LM(
-                     model=model, 
-                     api_key=groq_api_key, 
-                     api_base="https://api.groq.com/openai/v1",
-                     temperature=0.0,
-                     max_tokens=4096 # Higher limit for summarization
-                 )
-                 dspy.configure(lm=lm)
-             else:
-                 api_key = llm_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
-                 base_url = llm_config.get('base_url')
-                 lm = dspy.LM(
-                     model=model, 
-                     api_key=api_key, 
-                     api_base=base_url,
-                     temperature=0.0,
-                     max_tokens=4096
-                 )
-                 dspy.configure(lm=lm)
-                 
-        except Exception as e:
-             logger.warning(f"Failed to configure DSPy LM: {e}")
-             pass
+        # Higher token budget for summarization reports.
+        configure_dspy_lm(self.config, purpose="summarization", max_tokens=4096)
 
     def _format_context_xml(self, task: SummarizationTask) -> str:
         """
