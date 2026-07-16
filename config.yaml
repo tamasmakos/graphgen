@@ -1,9 +1,8 @@
 # GraphGen Configuration
-
 # Test Mode Configuration
 test_mode:
-  enabled: true
-  max_documents: 1
+  enabled: false        # Full corpus (no segment limit)
+  max_segments: 0
 
 # Infrastructure & Integration
 infra:
@@ -15,25 +14,24 @@ infra:
   input_dir: "input/txt/translated"
   output_dir: "output"
   clean_start: true
+  neo4j_upload_enabled: false
 
-# LLM Configuration
+# LLM Configuration (OpenRouter model ids — https://openrouter.ai/models)
 llm:
-  base_model: "llama-3.1-8b-instant"
-  extraction_model: "meta-llama/llama-4-scout-17b-16e-instruct"
-  summarization_model: "llama-3.1-8b-instant"
+  base_model: "meta-llama/llama-3.1-8b-instruct"
+  extraction_model: "meta-llama/llama-3.3-70b-instruct"
+  summarization_model: "meta-llama/llama-3.3-70b-instruct"
   temperature: 0.0
 
 # Extraction Settings
 extraction:
   chunk_size: 512
   chunk_overlap: 64
-  backend: "dspy"
+  backend: "ontology_dspy"   # Per-chunk semantic ontology matching + DSPy Predict
+  max_concurrent_chunks: 12  # Concurrent LLM extraction calls (OpenRouter; GLiNER skipped for ontology_dspy)
   gliner_model: "knowledgator/gliner-multitask-large-v0.5"
   device: "cuda"
   use_onnx: false
-  hierarchy_levels:
-    - "COMMUNITY"
-    - "SUBCOMMUNITY"
   ontology:
     enabled: true
     ontology_dir: "input/ontology/cdm-4.13.2"
@@ -42,9 +40,30 @@ extraction:
     top_level_only: true
     min_subclasses: 1
     include_local_names: true
+    max_labels: 60
+    match_threshold: 0.0     # Always use the best-matching ontology (no fallback)
   file_pattern: "*.txt"
 
 # Graph Schema is hardcoded in graphgen/config/schema.py
+
+# Graph Processing (pruning, resolution)
+# These settings tune in-graph cleaning steps that run after extraction.
+# Override individual fields with the corresponding env vars (see settings.py).
+processing:
+  enable_pruning: true
+  pruning_threshold: 0.01      # Remove entity_relation edges with confidence < this
+  prune_isolated_nodes: true   # Drop nodes with no remaining edges after pruning
+  min_component_size: 3        # Minimum component size kept (informational; not yet enforced by pruner)
+  similarity_threshold: 0.95   # Cosine similarity cutoff used by semantic entity resolution
+
+# Embedding Model
+# The sentence-transformer model used for RAG embeddings and entity resolution.
+# Override with EMBEDDING_MODEL / EMBEDDING_BATCH_SIZE / EMBEDDING_DEVICE env vars.
+embedding:
+  model_name: "all-MiniLM-L6-v2"
+  batch_size: 32
+  device: "cpu"                # CPU embeddings: run needs no GPU (GLiNER skipped, extraction via OpenRouter)
+  # cache_folder: null         # Optional path to cache downloaded model weights
 
 community:
   resolutions: [0.5] # Reduced for speed
@@ -54,26 +73,14 @@ community:
   
   # Node2Vec Config
   node2vec_enabled: true
-  node2vec_dimensions: 64
-  node2vec_walk_length: 16
+  node2vec_dimensions: 128     # Lighter for CPU on the full ~7k-node graph
+  node2vec_walk_length: 20
   node2vec_num_walks: 20
 
 # Analytics & Visualization
 analytics:
   enabled: true
   output_dir: "analytics_reports"
-  run_separation_report: true
-  # Silhouette thresholds for topic separation analysis
-  silhouette_min_samples: 3
-  silhouette_min_samples_per_cluster: 2
-  silhouette_max_clusters_ratio: 0.5
   visualization:
     interactive: true
     heatmap: true
-
-# Iterative Experiment Configuration - Smoke Test
-iterative:
-  enabled: true
-  batch_size: 3
-  iterations: 4
-  random_seed: 42

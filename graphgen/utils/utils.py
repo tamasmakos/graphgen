@@ -98,4 +98,25 @@ def merge_node_into(graph: nx.DiGraph, source_node: str, target_node: str) -> No
     
     # 4. Remove source node
     graph.remove_node(source_node)
+    
 
+# Singleton for Spacy model
+_SPACY_MODEL = None
+
+def get_spacy_model(model_name: str = "en_core_web_lg"):
+    """
+    Lazy load Spacy model.
+    """
+    global _SPACY_MODEL
+    if _SPACY_MODEL is None:
+        try:
+            import spacy
+            if not spacy.util.is_package(model_name):
+                logger.info(f"Downloading spacy model {model_name}...")
+                spacy.cli.download(model_name)
+            logger.info(f"Loading Spacy model {model_name}...")
+            _SPACY_MODEL = spacy.load(model_name)
+        except Exception as e:
+            logger.error(f"Failed to load Spacy model: {e}")
+            return None
+    return _SPACY_MODEL

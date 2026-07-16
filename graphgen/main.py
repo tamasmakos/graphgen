@@ -25,30 +25,25 @@ async def run_pipeline() -> None:
         
         logger.info(f"Configuration loaded. Input: {settings.infra.input_dir}, Output: {settings.infra.output_dir}")
         
-        from graphgen.utils.graphdb.neo4j_adapter import Neo4jGraphUploader
-        logger.info("Initializing Neo4j Backend...")
-        uploader = Neo4jGraphUploader(
-            host=settings.infra.neo4j_host,
-            port=settings.infra.neo4j_port,
-            username=settings.infra.neo4j_user,
-            password=settings.infra.neo4j_password,
-            database="neo4j"
-        )
+        if settings.infra.neo4j_upload_enabled:
+            from graphgen.utils.graphdb.neo4j_adapter import Neo4jGraphUploader
+            logger.info("Initializing Neo4j Backend...")
+            uploader = Neo4jGraphUploader(
+                host=settings.infra.neo4j_host,
+                port=settings.infra.neo4j_port,
+                username=settings.infra.neo4j_user,
+                password=settings.infra.neo4j_password,
+                database="neo4j"
+            )
+        else:
+            logger.info("Neo4j upload disabled via config (neo4j_upload_enabled: false).")
+            uploader = None
             
         # Initialize Extractor
         from graphgen.pipeline.entity_relation.extractors import get_extractor
         extractor = get_extractor(settings.model_dump())
-        
-        # Check for Iterative Mode
-        if settings.iterative.enabled:
-            from graphgen.pipeline.iterative_orchestrator import IterativeOrchestrator
-            logger.info("Starting Iterative Pipeline Orchestrator...")
-            pipeline = IterativeOrchestrator(settings, uploader, extractor)
-        else:
-            # Initialize the standard pipeline
-            pipeline = KnowledgePipeline(settings, uploader, extractor)
-        
-        # Run
+
+        pipeline = KnowledgePipeline(settings, uploader, extractor)
         await pipeline.run()
         
     except Exception as e:
