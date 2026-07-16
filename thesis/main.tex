@@ -1,0 +1,424 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,graphicx,hyperref,xurl,parskip,booktabs,longtable}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\hbadness=10000
+\hfuzz=20pt
+\setlength{\emergencystretch}{3em}
+\title{From Discourse to Structure: A Knowledge Graph-Based Approach to Topic Modeling in Political Debate}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+
+
+\section{From Discourse to Structure: A Knowledge Graph-Based Approach to Topic Modeling in Political Debate}
+
+
+\subsection{Abstract}
+
+
+Can we extract meaningful political topics from parliamentary speeches by building a knowledge graph and detecting communities within it? This thesis explores that question. Rather than treating topic modeling as a bag-of-words problem in the tradition of Latent Dirichlet Allocation (LDA), the approach taken here constructs an explicit knowledge graph from text---using a combination of ontology-guided named entity recognition and large language model (LLM) extraction---and then identifies topics as densely connected communities of entities and relationships within that graph.
+
+The methodology is applied to the verbatim reports of the `This is Europe' European Parliamentary debate series (2022--2024), a corpus of 13 speeches by EU Heads of State or Government. These debates took place during an unprecedented confluence of crises---Russia's invasion of Ukraine, the energy crisis, migration pressures---making the corpus both thematically rich and highly interconnected. An independent expert analysis by the European Parliamentary Research Service (EPRS) serves as the ground truth against which the pipeline's output is evaluated.
+
+The pipeline proceeds in three measurable stages. First, unstructured text is transformed into a knowledge graph using a ``just-enough-semantics'' design: the EU's own Common Data Model (CDM) ontology constrains which \emph{types} of entities the LLM may extract, while the relationships between those entities emerge freely from the text. The resulting graph (762 nodes) exhibits scale-free degree distribution ($\alpha$ $\approx$ 2.44, $R^2$ = 0.944), consistent with organically grown networks. Second, node2vec embeddings are used to reweight the graph's edges by topological similarity before the Leiden community detection algorithm partitions it into topics. This reweighting lifts the modularity score from a baseline of 0.753 to 0.818---an absolute gain of +0.065 (+8.6\%)---the best result among the configurations tested. Third, the detected communities are summarised by a 70-billion-parameter LLM into structured analytical reports. The resulting 99 communities range from the dominant ``European Union in Crisis'' cluster (477 entities) to niche national debates such as ``Bulgarian Protests Against Corruption'' (7 entities) and ``Greek Island Reception Facilities'' (3 entities).
+
+When compared to the EPRS ground truth, the pipeline's topics align well: the largest communities capture the dominant themes (Ukraine, energy, EU unity), while the smallest isolate the national policy debates that the EPRS records as secondary. The subtopic similarity distribution is approximately Gaussian and centred near $\mu$ $\approx$ 0.5, reflecting a corpus that is unified in subject but genuinely differentiated in sub-themes. These results suggest that graph-based community detection offers a promising direction for topic modeling in political discourse---one that warrants further investigation, particularly in corpora where standard probabilistic methods struggle with thematic overlap.
+
+
+\hrule
+
+
+\subsection{Chapter 1: From `Topic' to Graph Community}
+
+
+\subsubsection{1.1 What Is a Topic, and Why Does It Matter?}
+
+
+The word ``topic'' is used loosely in data science. In practice it usually means ``a cluster of words that tend to co-occur.'' But the concept has deeper roots. In linguistics, the foundational distinction is between the \emph{topic} (what a clause is about) and the \emph{comment} (what is being said about it)---what Halliday (1985) called the \emph{theme--rheme} structure of information. A topic, in this sense, is not a bag of words but an anchor: the entity or concept that organises the surrounding propositions.
+
+The philosophy of language adds another layer through the notion of ``aboutness'' (Reinhart, 1981). A topic is the thing the speaker directs the hearer's attention to, the subject about which information is conveyed. This is a pragmatic definition, grounded in communicative intent rather than syntactic position. It sets a higher bar for computational topic modeling: the goal should not merely be to find co-occurring terms, but to identify the primary subjects of ``aboutness'' that structure a body of text.
+
+This relational view of topics---where a topic is defined not in isolation but by its connections to other concepts---resonates with Foucault's (1972) characterisation of discourse as a ``system of thoughts'' in which meaning arises from the interplay of statements. If topics are constituted by relationships, then a representation that makes those relationships explicit should, in principle, capture them better than one that discards relational structure entirely.
+
+
+\subsubsection{1.2 From Probabilistic to Structural Topic Modeling}
+
+
+The dominant computational approach to topic modeling for the past two decades has been the probabilistic paradigm, exemplified by Latent Dirichlet Allocation (LDA) (Blei, Ng, \& Jordan, 2003). LDA defines a topic as a probability distribution over a vocabulary, inferred from word co-occurrence patterns within documents. This relies on the ``bag-of-words'' assumption, which treats text as an unordered collection of terms and discards syntax, reference, and relational structure.
+
+This thesis takes a different approach: a \emph{structural} one. Instead of inferring latent word distributions, it constructs an explicit knowledge graph from the text and identifies topics as communities within that graph. The working definition is straightforward:
+
+\emph{A topic is a densely interconnected community of entities (nodes) and their relationships (edges) within a knowledge graph, identified through community detection and articulated through a natural language summary.}
+
+This moves the unit of analysis from words to entities---people, organisations, places, policies---and their explicit, labelled relationships. The question this thesis asks is whether such communities, when detected algorithmically and summarised by an LLM, correspond to the topics that a human expert would identify in the same corpus. The answer, as the following chapters will show, is encouraging but nuanced.
+
+
+\hrule
+
+
+\subsection{Chapter 2: Building a Knowledge Graph from Parliamentary Debate}
+
+
+\subsubsection{2.1 The Corpus and Its Ground Truth}
+
+
+The corpus consists of the verbatim reports of the `This is Europe' debate series held in the European Parliament between April 2022 and March 2024. In this series, 13 EU Heads of State or Government addressed the Parliament to present their visions for the future of the European Union.
+
+The timing matters. The debates commenced shortly after Russia's full-scale invasion of Ukraine, a geopolitical event that reshaped European priorities overnight. They also ran concurrently with the conclusion of the Conference on the Future of Europe (CoFoE), a citizen-led initiative to guide EU policy. This backdrop means that while each leader brought a distinct national perspective, the speeches were anchored in a shared set of urgent challenges.
+
+An independent analysis of these debates by Drachenberg \& B\k{a}cal for the European Parliamentary Research Service (EPRS, 2024) provides a detailed ground truth. The EPRS identifies 43 specific topics addressed by the speakers, grouped into seven macro-categories: (i) policies, (ii) crises, (iii) European integration, (iv) national topics, (v) democracy, (vi) external relations, and (vii) geopolitical Europe. Their quantitative findings include:
+
+\begin{itemize}
+  \item \textbf{Ukraine} was mentioned by all 13 speakers and received 14\% of total speech attention---the dominant topic by both breadth and depth.
+  \item \textbf{Energy} was the second-most discussed policy area, accounting for 26\% of all policy-related attention, followed by \textbf{enlargement} at 24\%.
+  \item \textbf{National policies}---specific to individual Member States---accounted for 7\% of attention and were driven primarily by the speeches of Mitsotakis (Greece) and Christodoulides (Cyprus).
+  \item Six recurring themes appeared across speakers: the value of EU membership, defending EU values, the EU's main challenges, delivering for citizens, next steps in integration, and EU unity.
+\end{itemize}
+
+This corpus is a stringent test for any topic model. The high degree of thematic overlap and shared vocabulary makes it difficult for purely statistical methods to disentangle sub-topics---when every speaker discusses Ukraine, energy, and EU unity, word co-occurrence patterns blur together. The EPRS analysis serves as the benchmark against which the graph-based pipeline is evaluated in Chapter 4.
+
+
+\subsubsection{2.2 From Text to Graph: The Extraction Pipeline}
+
+
+The transformation of unstructured text into a structured knowledge graph proceeds through five stages, each governed by a specific design choice. The overarching principle is what I call ``just-enough-semantics'': the pipeline injects the minimum constraint necessary for consistency, while leaving the extraction free enough to surface the organic structure of the discourse.
+
+
+\paragraph{Stage 1: Ontology Injection.}
+
+Before any text is processed, the pipeline loads a domain-specific ontology to establish a vocabulary of permitted entity types. The ontology used here is the EU's own Common Data Model (CDM), version 4.13.2---the metadata vocabulary that the EU's Publications Office uses to catalogue legal and institutional documents. A set of RDF class files are parsed to extract entity type labels (e.g., \emph{Person}, \emph{Organisation}, \emph{GeopoliticalEntity}, \emph{Policy}, \emph{Event}). To keep this vocabulary focused, only top-level classes with at least one subclass are retained, and the labels are drawn from the \texttt{rdfs:label} annotations.
+
+The result is a curated set of entity types that reflects the institutional vocabulary of the EU itself. This is the ``just-enough'' part: the ontology tells the extraction \emph{what kinds of things} to look for, but it does not prescribe \emph{which} specific entities will appear or \emph{how} they will be connected. Entity types are constrained; relationships are free. The ontology defines the vocabulary of nodes; the discourse determines the grammar of edges.
+
+
+\paragraph{Stage 2: Text Chunking.}
+
+The raw verbatim transcripts are segmented into chunks of 512 tokens with a 64-token overlap between consecutive chunks. The chunk size is a design trade-off: smaller chunks yield higher extraction density (more entity mentions per chunk), but at the cost of more LLM calls and the risk of fragmenting multi-sentence arguments. The overlap ensures that relationships spanning a chunk boundary are not lost entirely.
+
+
+\paragraph{Stage 3: Hybrid Entity and Relationship Extraction.}
+
+Each chunk passes through a two-stage extraction process. First, a zero-shot Named Entity Recognition (NER) model---GLiNER (Knowledgator, multitask-large-v0.5)---scans the text using the ontology labels as its type vocabulary. GLiNER identifies candidate entities at a confidence threshold of 0.5, producing a set of high-confidence ``hints'' for the next stage.
+
+Second, a large language model (Llama-4-Scout-17B-16E-Instruct, via DSPy) receives three inputs: the chunk text, the full list of permitted entity types from the ontology, and the entity hints from GLiNER. The LLM extracts structured relationship triplets---\emph{(source entity, relationship, target entity)}---along with confidence scores and supporting evidence from the text. Crucially, the relationship labels are \emph{not} constrained by the ontology; they emerge freely from the text. This asymmetry is the heart of the design: entity types are standardised to prevent hallucination of arbitrary categories, while the relational structure of the graph is left entirely emergent.
+
+
+\paragraph{Stage 4: Graph Cleaning.}
+
+Raw LLM output is inconsistent. The same real-world entity may appear under different surface forms (``Olaf Scholz,'' ``the German Chancellor,'' ``Mr.\ Scholz''). Entity resolution addresses this by embedding all entities using a sentence-transformer model (all-MiniLM-L6-v2) and merging pairs whose cosine similarity exceeds 0.95. In addition, edges with extraction confidence below 0.01 are pruned, and isolated nodes (those left with no remaining edges) are removed. This cleaning step ensures that the graph's hub structure reflects genuine prominence rather than fragmentation artefacts.
+
+
+\paragraph{Stage 5: Graph Assembly.}
+
+The extracted and cleaned elements from all chunks are aggregated into a single, unified knowledge graph. Entities become nodes, relationships become edges, and factual claims extracted alongside the triplets are stored as node attributes. The assembled graph contains 762 nodes and forms the structured, machine-readable representation of the entire corpus.
+
+
+\subsubsection{2.3 A Sanity Check: Does the Graph Behave Like a Real Network?}
+
+
+If the extraction pipeline has been calibrated correctly---constraining enough to prevent noise, but not so much as to impose artificial structure---the resulting graph should resemble the kind of network that arises organically in the real world. Scale-free networks, characterised by a power-law degree distribution $P(k) \sim k^{-\alpha}$, are ubiquitous in complex systems: the World Wide Web, social networks, citation networks, and biological interaction networks all exhibit this topology (Barab\'{a}si \& Albert, 1999).
+
+The mechanism behind scale-free networks is well understood: \emph{growth} (the network expands over time) combined with \emph{preferential attachment} (new nodes are more likely to connect to already highly connected nodes). Parliamentary debate follows exactly this dynamic. Each speech adds new concepts to the network (growth), and to be relevant, speakers must connect their arguments to the most salient themes already under discussion---Ukraine, energy dependency, EU values---the established hubs (preferential attachment).
+
+Analysis of the knowledge graph's degree distribution confirms a power-law fit with exponent $\alpha$ $\approx$ 2.44 and a log-log $R^2$ = 0.944. This is within the range typical of real-world scale-free networks ($\alpha$ between 2 and 3). Had the ontology been too rigid, the graph would have shown a more uniform, lattice-like structure. Had the LLM been under-constrained, it would have approximated a random graph with a Poisson degree distribution. The observed power law suggests the extraction struck a reasonable balance---a reassuring sanity check that the graph preserves genuine discourse structure rather than imposing an artificial one.
+
+
+\hrule
+
+
+\subsection{Chapter 3: From Graph to Topics: Community Detection and Summarisation}
+
+
+\subsubsection{3.1 Community Detection with the Leiden Algorithm}
+
+
+With a validated knowledge graph in hand, the task of identifying topics becomes a problem of \emph{community detection}: partitioning the graph into subsets of nodes that are more densely connected internally than they are to the rest of the network. Each resulting community corresponds to a thematically coherent cluster of entities and relationships---the graph-theoretic operationalisation of a topic.
+
+This approach follows the logic of the GraphRAG framework (Edge et al., 2024), which applies community detection to knowledge graphs to generate what the authors call a ``Global Context'': a set of community-level summaries that collectively describe the thematic landscape of an entire corpus. Each community summary is, in effect, a topic. The present work applies the same community-as-topic framework to parliamentary discourse.
+
+The algorithm used is Leiden (Traag, Waltman, \& van Eck, 2019), an iterative method that maximises \emph{modularity}---a quality function measuring the difference between the actual density of edges within detected communities and the density expected under a random null model. A high modularity score indicates that the communities are genuine structural partitions, not statistical accidents. Leiden improves on its predecessor, the Louvain method, by guaranteeing that all detected communities are internally well-connected---no disconnected fragments masquerading as a single topic.
+
+The Leiden algorithm is configured with a resolution parameter of 0.5, which controls the granularity of the partition (lower values produce fewer, larger communities). The algorithm runs for 2 iterations with a minimum community size of 3 nodes and a fixed random seed of 42 for reproducibility.
+
+
+\paragraph{3.1.1 Improving the Partition with node2vec Edge Reweighting.}
+
+
+Applied to an unweighted graph, the Leiden algorithm treats every edge as equally informative about community membership. But in a discourse graph, not all connections carry the same signal. An edge between ``Ukraine'' and ``Russian Aggression''---two entities deeply embedded in the same tightly-knit cluster---is a stronger indicator of community membership than an edge between the hub node ``European Union'' and some peripheral entity it connects to incidentally.
+
+To address this, the pipeline uses node2vec (Grover \& Leskovec, 2016) to learn a structural embedding for every node in the graph, and then uses those embeddings to reweight the edges before community detection. The process has three steps.
+
+\textbf{Step 1: Learning structural embeddings.} node2vec performs biased random walks over the graph and trains a skip-gram model on the resulting sequences of node visits, producing a 256-dimensional vector for every node. Each walk is 50 steps long, and 100 walks are generated per node. With the return parameter $p = 1$ and the in-out parameter $q = 1$ (both at their defaults), the walks balance local neighbourhood exploration with broader traversal. The result is that nodes occupying similar structural positions---belonging to the same tightly-knit cluster, sharing the same neighbours---end up with similar vectors.
+
+\textbf{Step 2: Reweighting edges.} For every edge in the graph, the cosine similarity between the node2vec vectors of its two endpoint nodes is computed. This similarity score becomes the edge's weight. Edges connecting structurally similar nodes (same neighbourhood, same cluster) receive high weights. Edges connecting structurally dissimilar nodes---bridges between clusters, or links from a hub to a distant periphery---receive low weights.
+
+\textbf{Step 3: Weighted community detection.} The Leiden algorithm runs on this reweighted graph. The high-weight edges act as strong ``glue'' that keeps cohesive groups together, while the low-weight edges between clusters are easier for the algorithm to cut. The effect is a sharper, more clearly delineated partition.
+
+The empirical result is direct: on the full 762-node knowledge graph, the Leiden algorithm achieves a baseline modularity of \textbf{0.753} on the unweighted graph. After node2vec edge reweighting, the modularity rises to \textbf{0.818}---an absolute gain of +0.065, or +8.6\%. This is the best result among the configurations tested (resolution 0.5, node2vec with $p = q = 1$, 256 dimensions, walk length 50, 100 walks per node). No alternative combination of these parameters that I explored produced a higher modularity on this graph, though a more exhaustive hyperparameter search could in principle find further improvements. Within the tested settings, node2vec reweighting provides a clear and measurable lift.
+
+
+\subsubsection{3.2 Hierarchical Abstraction}
+
+
+The Leiden algorithm can be applied recursively. After an initial partition is found, each community can be treated as a new subgraph and partitioned again to reveal finer-grained sub-communities. This produces a nested, multi-resolution view of the thematic landscape: broad themes at the top level (e.g., ``EU's Main Challenges'') decompose into more specific sub-themes (``Energy Crisis,'' ``Inflation,'' ``Disinformation'') at the lower level, mirroring the natural hierarchical organisation of discourse.
+
+
+\subsubsection{3.3 Generating Topic Summaries}
+
+
+The output of community detection is a set of subgraphs---clusters of entities and relationships. While this structure is analytically powerful, it is not immediately interpretable to a reader. The final stage of the pipeline translates each community into a natural language summary using a large language model (Llama-3.3-70B-Versatile, at temperature 0.0 for deterministic output).
+
+The summarisation follows a strict bottom-up order. Leaf-level communities (subtopics) are summarised first. Their summaries then feed into the summarisation of parent-level communities (topics), ensuring that higher-level summaries are genuine abstractions of their components rather than independent re-descriptions.
+
+For each community, the LLM receives a structured context formatted in XML, containing four layers of information:
+
+\begin{enumerate}
+  \item \textbf{Community structure}: an enumeration of the community's entities, sorted by degree (how many connections each has), accompanied by their ontological types.
+  \item \textbf{Relationship network}: the internal edges of the community, formatted as \emph{source--relation--target} triplets.
+  \item \textbf{Sub-community summaries}: for parent-level topics, the previously generated summaries of child communities.
+  \item \textbf{Textual evidence}: a curated selection of text chunks from the original corpus where the community's entities co-occur.
+\end{enumerate}
+
+The LLM is instructed to produce a structured JSON report containing a concise title (3--10 words), an executive summary (3--5 sentences), and 3--5 detailed findings, each consisting of a summary statement and an explanation paragraph grounded in specific entities, relationships, or textual evidence. This format ensures that every claim in a topic summary is traceable back to the graph structure and the source text.
+
+
+\hrule
+
+
+\subsection{Chapter 4: What the Pipeline Found}
+
+
+\subsubsection{4.1 The Discovered Topics}
+
+
+The pipeline produced 99 communities in total, ranging from a single dominant cluster of 477 entities down to small, specialised communities of 3 entities each. These communities can be grouped into three natural tiers based on their size and thematic scope.
+
+\paragraph{The Core European Discourse.}
+
+The largest communities capture the dominant, cross-cutting themes of the debates:
+
+\begin{itemize}
+  \item \textbf{TOPIC\_0}: ``European Union in Crisis'' (477 entities). This is the mega-community that absorbs the central discourse: the conflict in Ukraine, energy price increases, economic instability, the need for EU unity, and the Conference on the Future of Europe. Its sheer size reflects the degree to which these topics are interwoven in the speeches.
+  \item \textbf{TOPIC\_1}: ``European Community and Values'' (65 entities). Democracy, rule of law, non-discrimination, migration pressures, and the transition to renewable energy.
+  \item \textbf{TOPIC\_5}: ``European Union and Western Balkans Integration'' (67 entities). The impact of Russian aggression, migration pressure, energy security, and Slovenia's role in the green transition.
+  \item \textbf{TOPIC\_3}: ``European Community and Strategic Autonomy'' (57 entities). Energy dependence, defence capabilities, unified foreign policy, and the tension between national independence and collective cooperation.
+  \item \textbf{TOPIC\_9}: ``European Community Response to Russian Aggression'' (56 entities). Unity, energy independence, alternatives to Russian gas, and the roles of Germany, Italy, and Poland.
+\end{itemize}
+
+\paragraph{Policy-Specific Communities.}
+
+At the middle tier, smaller communities isolate particular policy domains:
+
+\begin{itemize}
+  \item \textbf{TOPIC\_7}: ``Greece's Economic and Geopolitical Landscape'' (48 entities). Greece's economic growth, migration challenges, border tensions with Turkey, and the role of the Mitsotakis government.
+  \item \textbf{TOPIC\_23}: ``Bulgarian Protests Against Corruption'' (7 entities). The Sofia protests, the downfall of corrupt officials, and the speaker's emphasis on the green transition.
+  \item \textbf{TOPIC\_29}: ``Energy Independence Community'' (6 entities). Solar heating, heat pumps, electric vehicles---the technologies of household energy autonomy.
+  \item \textbf{TOPIC\_34}: ``Erosion of Democratic Values in Slovenia'' (5 entities). Mr.\ Jan\v{s}a's actions, attacks on parliamentarians, compromised judicial independence, and the `Orbanisation' of Slovenian politics.
+  \item \textbf{TOPIC\_46}: ``Western Balkans Integration into Europe'' (4 entities). The political structures needed for accession, the rule of law, and the case for regional inclusion.
+\end{itemize}
+
+\paragraph{Niche National Debates.}
+
+At the periphery, the smallest communities capture highly specific national issues:
+
+\begin{itemize}
+  \item \textbf{TOPIC\_40}: ``Economic Impact of 110\% Super Bonus Policy'' (4 entities). Italy's fiscal stimulus measure, its tripling of efficiency improvement costs, and the debate over its effectiveness.
+  \item \textbf{TOPIC\_58}: ``Legacy of Conflict and State Forces'' (3 entities). Legislation granting amnesty for crimes by state forces, with implications for the Good Friday Agreement and Irish politics.
+  \item \textbf{TOPIC\_65}: ``Slovenian Agent's Fraudulent Activities'' (3 entities). The loss of a border arbitration process and its denunciation by the Croatian Parliament.
+  \item \textbf{TOPIC\_73}: ``Greek Island Reception Facilities'' (3 entities). EU-funded reception centres on Samos and Chios, and the contrast with the previous government's facilities at Moria.
+  \item \textbf{TOPIC\_77}: ``Finnish Constitution's European Influence'' (3 entities). The 1919 Finnish Constitution's impact on the powers of heads of state in Austria and Iceland.
+\end{itemize}
+
+This three-tier structure---a dense core of interconnected European themes, a middle ring of policy-specific clusters, and a periphery of niche national debates---emerges entirely from the graph topology. It was not prescribed by the ontology or the extraction prompts.
+
+
+\subsubsection{4.2 Who Are the Hubs? Centrality in the Knowledge Graph}
+
+
+The centrality analysis reveals which entities occupy the most structurally important positions in the graph. Table~\ref{tab:centrality} reports the top entities across four standard centrality measures.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Top entities by centrality measures (normalised scores). Each column shows the top-ranked entities for that metric; a dash (---) indicates that the entity did not rank in the top reporting threshold for that particular measure and is therefore omitted rather than zero.}
+\label{tab:centrality}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Entity} & \textbf{Degree} & \textbf{Betweenness} & \textbf{Closeness} & \textbf{Eigenvector} \\
+\midrule
+European Union & 0.084 & 0.032 & 0.052 & 0.156 \\
+Ukraine        & 0.026 & 0.007 & 0.047 & 0.120 \\
+Russia         & 0.017 & 0.003 & 0.044 & 0.125 \\
+Greece         & 0.035 & 0.012 & 0.044 & --- \\
+Europe         & 0.027 & 0.007 & 0.047 & 0.087 \\
+Slovenia       & 0.024 & 0.005 & 0.045 & --- \\
+European Parl. & 0.022 & 0.009 & --- & --- \\
+Italy          & 0.018 & 0.003 & --- & --- \\
+Ireland        & 0.017 & 0.005 & 0.042 & --- \\
+Democracy      & 0.009 & --- & 0.045 & 0.080 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+``European Union'' dominates all four measures, which is expected given that the entire corpus is about EU affairs. More interesting are the secondary hubs. ``Ukraine'' and ``Russia'' have high eigenvector centrality (0.120 and 0.125 respectively)---meaning they are connected to other highly connected nodes---despite having lower raw degree than ``Greece'' (0.035) or ``Slovenia'' (0.024). This reflects a structural asymmetry: Greece and Slovenia appear frequently because their leaders (Mitsotakis and Golob) gave particularly detailed speeches, while Ukraine and Russia are structurally central because they connect to the dominant crisis themes that run through \emph{every} speech.
+
+Notably, ``Energy Crisis'' (eigenvector 0.093) and ``NATO'' (eigenvector 0.072) are among the top entities by eigenvector centrality despite not ranking highest by degree. These entities matter not because of their own direct connections but because they sit at the intersection of other highly connected themes---energy links to Ukraine, Russia, and strategic autonomy; NATO links to defence, enlargement, and collective security. This is precisely the kind of structural insight that a graph-based approach can surface but a word-frequency analysis would miss.
+
+
+\subsubsection{4.3 Validation Against the EPRS Ground Truth}
+
+
+The central question is whether the pipeline's topics correspond to those identified by human experts. To make this comparison explicit, Table~\ref{tab:eprs} maps each of the EPRS's top-level topic categories to the pipeline communities whose summaries and hub entities most closely match. The assignment rule is straightforward: a pipeline community is mapped to an EPRS category if its LLM-generated title and the majority of its top-5 hub entities (by degree) fall within the scope of that EPRS category. Where a community spans multiple EPRS categories, it is listed under the primary one. The comparison is encouraging.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Mapping of EPRS topic categories to pipeline communities. ``Speakers'' and ``Attention'' columns reproduce the EPRS quantitative findings. ``Pipeline communities'' lists the communities whose titles and hub entities match the EPRS category.}
+\label{tab:eprs}
+\begin{tabular}{p{2.8cm}ccp{5.5cm}}
+\toprule
+\textbf{EPRS Category} & \textbf{Speakers} & \textbf{Attention} & \textbf{Pipeline Communities} \\
+\midrule
+Ukraine / Russian aggression & 13/13 & 14\% & TOPIC\_0 (477 ent.), TOPIC\_9 (56 ent.), TOPIC\_24 (6 ent.) \\
+Energy & 11/13 & 7\% & TOPIC\_29, 47, 60, 67, 80; also within TOPIC\_0, 9, 16 \\
+Enlargement & 12/13 & 6\% & TOPIC\_5 (67 ent.), TOPIC\_46 (4 ent.) \\
+National policies & 7/13 & 7\% & TOPIC\_7 (48 ent.), TOPIC\_22, 34, 40, 58, 65, 73 \\
+EU values / unity & 10/13 & 4\% & TOPIC\_1 (65 ent.), TOPIC\_10 (54 ent.), TOPIC\_19 (29 ent.) \\
+EU reforms / integration & 11/13 & 5\% & TOPIC\_4 (62 ent.), TOPIC\_17 (34 ent.), TOPIC\_25 (6 ent.) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several observations follow from this mapping. The pipeline does not produce a clean one-to-one correspondence with the EPRS categories---nor should it, since the EPRS categories are analyst-defined macro-themes while the pipeline communities are algorithmically derived from graph topology. Instead, the alignment is many-to-one: each EPRS category maps to multiple communities at different levels of granularity. This is consistent with the hierarchical structure of the graph partition.
+
+\paragraph{Ukraine and the dominant discourse.}
+
+The EPRS reports that Ukraine was the single most prominent topic, discussed by all 13 speakers and receiving 14\% of total attention. In the pipeline's output, TOPIC\_0 (``European Union in Crisis,'' 477 entities) is overwhelmingly dominated by Ukraine, Russia, sanctions, energy dependency, and EU unity. Its sheer size---more than six times larger than any other community---reflects the degree to which the Ukraine crisis pervades the entire corpus. This matches the EPRS finding that Ukraine was not merely one topic among many but the defining context of all the debates.
+
+\paragraph{Energy as a cross-cutting theme.}
+
+The EPRS identifies energy as the second-most discussed policy area (26\% of policy attention). In the knowledge graph, energy does not form a single community but appears across at least eight distinct ones: TOPIC\_29 (household energy independence), TOPIC\_47 (Slovenian energy holding recapitalisation), TOPIC\_60 (regional energy hubs), TOPIC\_67 (Greek electrical interconnection), TOPIC\_80 (climate action and energy dynamics), and within the core communities TOPIC\_0, TOPIC\_9, and TOPIC\_16. This fragmentation reflects a genuine property of the discourse: energy is not discussed as a standalone topic but as a dimension of nearly every other debate---security, climate, economic stability, national policy. The graph captures this cross-cutting nature by embedding energy-related entities in multiple communities rather than artificially isolating them.
+
+\paragraph{National policies.}
+
+The EPRS notes that ``national policies'' accounted for 7\% of attention and were driven primarily by the speeches of Mitsotakis and Christodoulides. The pipeline successfully isolates these national concerns: TOPIC\_7 (``Greece's Economic and Geopolitical Landscape,'' 48 entities) captures Mitsotakis's detailed account of Greek economic reforms, migration challenges, and border tensions with Turkey. TOPIC\_22 (``Greek Community Dynamics,'' 10 entities) and TOPIC\_73 (``Greek Island Reception Facilities'') capture progressively more specific Greek policy issues. Similarly, TOPIC\_34 captures the Slovenian democratic erosion under Jan\v{s}a, TOPIC\_65 captures the Croatia--Slovenia border arbitration dispute, and TOPIC\_58 captures the Irish legacy conflict legislation. The pipeline does not merely identify ``national policies'' as a category---it separates them into distinct, country-specific communities, a level of granularity that the EPRS report does not attempt.
+
+\paragraph{The six recurring themes.}
+
+The EPRS identifies six cross-cutting themes: the value of EU membership, defending EU values, the EU's main challenges, delivering for citizens, next steps in integration, and EU unity. These themes do not map one-to-one to individual communities---they are too broad and too interconnected for that. Instead, they manifest as the shared vocabulary of the largest communities (TOPIC\_0 through TOPIC\_20), each of which combines several of these themes from a different national or rhetorical angle. TOPIC\_1 emphasises values and democracy; TOPIC\_3 emphasises strategic autonomy and defence; TOPIC\_4 focuses on integration and cooperation. The graph differentiates perspectives and emphases within the shared discourse, rather than inventing wholly separate topics where none exist.
+
+\paragraph{What the pipeline found that the EPRS did not emphasise.}
+
+Interestingly, the pipeline isolates several communities that the EPRS records only in passing or not at all: TOPIC\_30 (the Eurozone's evolution into a transfer union), TOPIC\_53 (global food security and FAO projections), TOPIC\_63 (the Brezhnev doctrine and its relevance to current Russian imperialism), and TOPIC\_77 (the influence of the Finnish Constitution on European constitutional law). These are niche arguments made by individual speakers, too small to register as ``topics'' in the EPRS's macro analysis but structurally distinct enough for the Leiden algorithm to separate them. Whether these qualify as genuine ``topics'' or merely as isolated anecdotes is a matter of interpretation---but the pipeline's ability to surface them is itself informative.
+
+
+\subsubsection{4.4 Similarity Analysis: The Shape of the Topic Landscape}
+
+
+The pairwise cosine similarity distribution of the subtopic summaries provides a bird's-eye view of the topic landscape. The distribution is approximately Gaussian, centred near $\mu$ $\approx$ 0.5, with a spread ranging from low-similarity pairs ($\approx$ 0.17--0.35) to high-similarity pairs ($\approx$ 0.65--1.0).
+
+This shape is what one would expect from a corpus that is unified by its subject (European politics during a shared set of crises) but internally differentiated by national perspectives and policy domains. If the topics were entirely unrelated, the distribution would be concentrated near zero. If the model had failed to find any meaningful differentiation, it would be compressed near 1.0. The observed bell curve at $\mu$ $\approx$ 0.5 sits between these extremes, reflecting a genuine balance of shared context and sub-thematic variation.
+
+The tails of the distribution map onto the three-tier structure described above. The right tail (similarity $\approx$ 0.6--1.0) corresponds to the core European topics---the Ukraine/energy/security/unity cluster---which share vocabulary, argumentative structure, and entities across communities. The left tail (similarity $\approx$ 0.17--0.35) corresponds to the niche national debates: Italian fiscal policy, Slovenian border arbitration, Greek island facilities. These pairs are semantically distant from the core discourse, confirming that the Leiden algorithm has successfully separated them. The EPRS independently confirms this structure: Ukraine, energy, and unity are the dominant pan-European themes; national policies are the secondary, speaker-specific ones.
+
+
+\subsubsection{4.5 Honest Limitations: Structural Coherence vs.\ Semantic Overlap}
+
+
+An important caveat must be stated directly. While the Leiden algorithm achieves high modularity (0.818), meaning the communities are structurally well-defined, the semantic distinctiveness of many topics is limited. The subcommunity silhouette scores are persistently negative (around $-0.17$), indicating that when entities are embedded in semantic vector space, they are often closer to entities in \emph{other} communities than to entities in their \emph{own} community.
+
+This is not surprising given the corpus. When 13 EU leaders discuss the same crises using overlapping vocabularies, the semantic embeddings of their arguments will naturally project into overlapping regions of vector space. The graph-based approach captures structural variation---different patterns of entity co-occurrence, different relational configurations---even where the \emph{words used} are highly similar. This is both a strength and a limitation: the model distinguishes perspectives and emphases rather than wholly distinct topics.
+
+A related observation is that topic distinctiveness \emph{degrades} as the corpus grows. An iterative experiment processed the speeches cumulatively in six iterations, adding two speeches per iteration up to 12 of the 13 speeches. (The 13th speech, by Kallas, was delivered before the Conference of Presidents formally endorsed the `This is Europe' initiative and was excluded from the iterative experiment by the EPRS itself; the final full-corpus graph reported elsewhere in this thesis includes all 13.) Between iteration 1 (2 speeches) and iteration 6 (12 speeches), topic separation drops from 0.595 to 0.486 and topic overlap increases from 0.405 to 0.514. This makes sense: each new speech introduces entities and relationships that bridge previously distinct clusters, reinforcing the interconnected nature of the discourse. Speakers in parliamentary debates do not introduce wholly novel themes---they reinforce, reframe, and connect existing ones. The pipeline faithfully reflects this convergence rather than artificially maintaining separability.
+
+
+\hrule
+
+
+\subsection{Chapter 5: Conclusion}
+
+
+\subsubsection{5.1 What This Thesis Found}
+
+
+This thesis explored whether building a knowledge graph from parliamentary text and detecting communities within it could produce meaningful, interpretable topics. The results suggest that it can, with some important qualifications.
+
+The pipeline transforms unstructured text into a knowledge graph through a sequence of concrete steps: ontology injection using the EU's CDM vocabulary, hybrid NER and LLM extraction, semantic entity resolution, and graph assembly. The resulting graph exhibits scale-free degree distribution ($\alpha$ $\approx$ 2.44), consistent with organically grown networks and suggesting that the extraction preserved genuine discourse structure. node2vec edge reweighting lifts the Leiden algorithm's modularity from 0.753 to 0.818 (+8.6\%), the best partition quality among the configurations tested. The 99 resulting communities, when summarised by a large language model, align well with the topics identified independently by the EPRS expert analysis.
+
+Three observations stand out. First, the pipeline successfully separates the dominant pan-European discourse (Ukraine, energy, unity) from niche national debates (Bulgarian corruption, Greek island reception facilities, Italian fiscal stimulus)---a three-tier structure that matches the EPRS's distinction between cross-cutting themes and speaker-specific concerns. Second, the centrality analysis reveals structural roles that go beyond word frequency: ``Ukraine'' and ``Russia'' are more structurally central (by eigenvector centrality) than their raw degree would suggest, because they connect to other highly connected themes. Third, energy does not form a single topic but is distributed across eight communities, faithfully reflecting its cross-cutting nature in the original debates.
+
+
+\subsubsection{5.2 What It Contributes}
+
+
+The primary contribution is methodological: a working pipeline that translates graph topology into auditable, structured topic reports. Unlike probabilistic models that produce opaque word distributions, this approach generates explicit knowledge structures where every claim in a topic summary can be traced to specific entities, relationships, and source text. This transparency is particularly valuable in domains like political science and policy analysis, where interpretability matters.
+
+The node2vec reweighting step is worth highlighting. The idea of using topological embeddings to improve community detection is not new, but the measurable lift it provides on this specific corpus (+8.6\% modularity) demonstrates its practical value. It transforms the Leiden partition from adequate to substantially sharper by making the community structure more legible to the algorithm.
+
+The thesis also offers a candid view of the approach's limitations in the context of highly cohesive political discourse. The negative silhouette scores are not a failure of the model---they are an honest measurement of the degree to which European parliamentary debate is semantically interconnected. A model that reported clean, well-separated topics from this corpus would be more misleading than one that honestly reflects the overlap.
+
+
+\subsubsection{5.3 Limitations and Directions for Future Work}
+
+
+Several limitations should be noted directly. The semantic overlap between topics remains a challenge: while the communities are structurally distinct, their summaries often mention the same entities (energy, migration, EU unity). Developing post-processing methods to merge structurally separate but semantically identical communities would be a natural next step.
+
+The pipeline was tested on a single, relatively small corpus (13 speeches). It would be interesting to see how the approach scales to larger corpora, to debates in other languages, or to domains outside European politics where the topics may be more sharply differentiated.
+
+The resolution parameter of the Leiden algorithm (set to 0.5 here) strongly influences the number and size of communities. A systematic exploration of resolution values, perhaps using stability analysis across multiple resolutions, could provide a more principled basis for choosing this parameter.
+
+Finally, the current pipeline is static: it produces a single snapshot of the discourse. Extending it to track how topics emerge, merge, and evolve as new speeches are added---a dynamic or temporal analysis---could yield insights into the process of political consensus formation that a static analysis cannot capture.
+
+
+\hrule
+
+
+\subsection{References}
+
+
+Barab\'{a}si, A.-L. \& Albert, R. (1999) `Emergence of scaling in random networks', Science, 286(5439), pp. 509--512.
+
+
+Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., Metropolitansky, D., Ness, R. O. \& Larson, J. (2024) `From local to global: A GraphRAG approach to query-focused summarization', arXiv preprint arXiv:2404.16130.
+
+
+Blei, D. M., Ng, A. Y. \& Jordan, M. I. (2003) `Latent Dirichlet Allocation', Journal of Machine Learning Research, 3, pp. 993--1022.
+
+
+Bordes, A., Usunier, N., Garcia-Duran, A., Weston, J. \& Yakhnenko, O. (2013) `Translating embeddings for modeling multi-relational data', Advances in Neural Information Processing Systems, 26, pp. 2787--2795.
+
+
+European Parliamentary Research Service (2024) `This is Europe' debates: Analysis of EU leaders' speeches. Drachenberg, R. \& B\k{a}cal, P. Available at: \url{https://www.europarl.europa.eu/thinktank/en/document/EPRS\_BRI(2024)757844} (Accessed: 15 January 2024).
+
+
+Foucault, M. (1972) The archaeology of knowledge. New York: Pantheon Books.
+
+
+Grover, A. \& Leskovec, J. (2016) `node2vec: Scalable feature learning for networks', Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining, pp. 855--864.
+
+
+Halliday, M. A. K. (1985) An introduction to functional grammar. London: Edward Arnold.
+
+
+Newman, M. E. J. (2005) `Power laws, Pareto distributions and Zipf's law', Contemporary Physics, 46(5), pp. 323--351.
+
+
+Newman, M. E. J. (2006) `Modularity and community structure in networks', Proceedings of the National Academy of Sciences, 103(23), pp. 8577--8582.
+
+
+Newman, M. E. J. \& Girvan, M. (2004) `Finding and evaluating community structure in networks', Physical Review E, 69(2), p. 026113.
+
+
+Reinhart, T. (1981) `Pragmatics and linguistics: An analysis of sentence topics', Philosophica, 27(1), pp. 53--94.
+
+
+Rousseeuw, P. J. (1987) `Silhouettes: A graphical aid to the interpretation and validation of cluster analysis', Journal of Computational and Applied Mathematics, 20, pp. 53--65.
+
+
+Traag, V. A., Waltman, L. \& van Eck, N. J. (2019) `From Louvain to Leiden: guaranteeing well-connected communities', Scientific Reports, 9(1), p. 5233.
+
+
+\end{document}
