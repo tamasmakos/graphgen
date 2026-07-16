@@ -17,12 +17,16 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 
-from graphgen.config.llm import get_langchain_llm
-from graphgen.pipeline.entity_relation.dspy_module import GraphExtractorModule
+from graphgen.config.llm import get_langchain_llm, configure_dspy_lm
+from graphgen.pipeline.entity_relation.dspy_module import (
+    GraphExtractorModule,
+    OntologyGuidedExtractorModule,
+)
 import dspy
 import os
 
 from graphgen.utils.utils import standardize_label
+from graphgen.pipeline.entity_relation.dspy_module import ENTITY_LIST_SEPARATOR
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,12 @@ DEFAULT_EXTRACTION_PROMPT = ChatPromptTemplate.from_template(
 
 class BaseExtractor(ABC):
     """Base class for graph extractors."""
-    
+
+    # Whether this extractor consumes NER (GLiNER/Spacy) entity hints.
+    # Extractors that do their own typing (e.g. ontology-guided) set this
+    # False so the pipeline can skip the expensive, GPU-serialised NER step.
+    requires_ner_hints: bool = True
+
     @abstractmethod
     async def extract_relations(
         self,
@@ -190,70 +199,103 @@ class LangChainExtractor(BaseExtractor):
         return [], []
 
 
+def _parse_dspy_triplets(
+    raw_triplets: list,
+) -> tuple:
+    """
+    Convert a list of DSPy Triplet objects (or dicts) into the canonical
+    ``(relations, nodes_data)`` format consumed by the rest of the pipeline.
+
+    Fan-out handling
+    ----------------
+    When an LLM returns a JSON list for an entity field (e.g. target:
+    ["RUSSIA", "CHINA", "TURKEY"]), the Triplet field_validator joins the
+    values with ENTITY_LIST_SEPARATOR rather than crashing.  This function
+    detects those delimited strings and performs a cartesian-product expansion
+    so that one "multi-valued" triplet becomes N individual triplets.
+
+    Examples
+    --------
+    Single target (normal case):
+        Triplet(source="EU", relation="sanctions", target="RUSSIA", ...)
+        → [("EU", "SANCTIONS", "RUSSIA", {...})]
+
+    Multi-target (fan-out, after validator coercion):
+        Triplet(source="EU", relation="sanctions", target="RUSSIA|||CHINA|||TURKEY", ...)
+        → [("EU", "SANCTIONS", "RUSSIA", {...}),
+           ("EU", "SANCTIONS", "CHINA",  {...}),
+           ("EU", "SANCTIONS", "TURKEY", {...})]
+
+    Multi-source AND multi-target (full cartesian product):
+        Triplet(source="A|||B", relation="rel", target="X|||Y", ...)
+        → [("A","REL","X",{...}), ("A","REL","Y",{...}),
+           ("B","REL","X",{...}), ("B","REL","Y",{...})]
+
+    Returns
+    -------
+    relations : list of (source, relation, target, props) tuples
+    nodes_data : list of {"id": ..., "type": ..., "properties": {}} dicts
+    """
+    relations = []
+    nodes_data = []
+    seen_nodes: set = set()
+
+    for triplet in (raw_triplets or []):
+        if isinstance(triplet, dict):
+            source = triplet.get("source") or ""
+            relation = triplet.get("relation") or ""
+            target = triplet.get("target") or ""
+            source_type = triplet.get("source_type") or "ENTITY"
+            target_type = triplet.get("target_type") or "ENTITY"
+            confidence = triplet.get("confidence", 1.0)
+            evidence = triplet.get("evidence", "")
+        else:
+            source = getattr(triplet, "source", "") or ""
+            relation = getattr(triplet, "relation", "") or ""
+            target = getattr(triplet, "target", "") or ""
+            source_type = getattr(triplet, "source_type", None) or "ENTITY"
+            target_type = getattr(triplet, "target_type", None) or "ENTITY"
+            confidence = getattr(triplet, "confidence", 1.0)
+            evidence = getattr(triplet, "evidence", "")
+
+        if not source or not relation or not target:
+            continue
+
+        # Expand fan-out values back into individual entity strings
+        sources = [s.strip() for s in source.split(ENTITY_LIST_SEPARATOR) if s.strip()]
+        targets = [t.strip() for t in target.split(ENTITY_LIST_SEPARATOR) if t.strip()]
+
+        relation = standardize_label(relation)
+        source_type = standardize_label(source_type)
+        target_type = standardize_label(target_type)
+
+        props = {"confidence": confidence, "evidence": evidence}
+
+        for src in sources:
+            src = standardize_label(src)
+            for tgt in targets:
+                tgt = standardize_label(tgt)
+                if not src or not tgt or src == tgt:
+                    continue
+                relations.append((src, relation, tgt, props))
+
+                if src not in seen_nodes:
+                    nodes_data.append({"id": src, "type": source_type, "properties": {}})
+                    seen_nodes.add(src)
+                if tgt not in seen_nodes:
+                    nodes_data.append({"id": tgt, "type": target_type, "properties": {}})
+                    seen_nodes.add(tgt)
+
+    return relations, nodes_data
+
+
 class DSPyExtractor(BaseExtractor):
     """DSPy-based extractor."""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize with config."""
         self.config = config
-        
-        # Configure DSPy with the LLM from config
-        llm_config = config.get('llm', {})
-        # Flatten if it's a pydantic model dump
-        if hasattr(llm_config, 'model_dump'):
-            llm_config = llm_config.model_dump()
-            
-        # Try to find the best model name from config
-        model = llm_config.get('extraction_model') or llm_config.get('base_model') or llm_config.get('model') or 'gpt-4o'
-        
-        # Check for Groq API Key
-        groq_api_key = None
-        infra_config = config.get('infra', {})
-        if hasattr(infra_config, 'model_dump'):
-            infra_config = infra_config.model_dump()
-            
-        # Try to get key from infra config or direct LLM config or env
-        val = infra_config.get('groq_api_key') or llm_config.get('groq_api_key')
-        if val:
-             if hasattr(val, 'get_secret_value'):
-                 groq_api_key = val.get_secret_value()
-             else:
-                 groq_api_key = str(val)
-        
-        if not groq_api_key:
-            groq_api_key = os.environ.get('GROQ_API_KEY')
-
-        # Determine provider and configure
-        try:
-             if groq_api_key:
-                 # Configure for Groq using OpenAI compatibility
-                 logger.info(f"Configuring DSPy for Groq with model {model}")
-                 lm = dspy.LM(
-                     model=model, 
-                     api_key=groq_api_key, 
-                     api_base="https://api.groq.com/openai/v1",
-                     temperature=0.0,
-                     max_tokens=2048
-                 )
-                 dspy.configure(lm=lm)
-             else:
-                 # Fallback to OpenAI or other default
-                 api_key = llm_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
-                 base_url = llm_config.get('base_url')
-                 lm = dspy.LM(
-                     model=model, 
-                     api_key=api_key, 
-                     api_base=base_url,
-                     temperature=0.0,
-                     max_tokens=2048
-                 )
-                 dspy.configure(lm=lm)
-                 
-        except Exception as e:
-             logger.warning(f"Failed to configure DSPy LM: {e}")
-             # Fallback or already configured
-             pass
-        
+        model = configure_dspy_lm(config, purpose="extraction")
         self.module = GraphExtractorModule()
         logger.info(f"Initialized DSPy extractor with model {model}")
 
@@ -278,68 +320,125 @@ class DSPyExtractor(BaseExtractor):
                 return prediction.triplets
                 
             triplets = await asyncio.to_thread(_extract_sync)
-            
-            # Convert to expected format
-            relations = []
-            nodes_data = []
-            seen_nodes = set()
-            
-            # triplets is expected to be a list of Triplet objects (pydantic models)
-            if triplets:
-                for triplet in triplets:
-                    # Handle both dict and object access just in case
-                    if isinstance(triplet, dict):
-                        source = triplet.get('source')
-                        relation = triplet.get('relation')
-                        target = triplet.get('target')
-                        source_type = triplet.get('source_type')
-                        target_type = triplet.get('target_type')
-                    else:
-                        source = getattr(triplet, 'source', None)
-                        relation = getattr(triplet, 'relation', None)
-                        target = getattr(triplet, 'target', None)
-                        source_type = getattr(triplet, 'source_type', None)
-                        target_type = getattr(triplet, 'target_type', None)
-                    
-                        source_type = getattr(triplet, 'source_type', None)
-                        target_type = getattr(triplet, 'target_type', None)
-                        confidence = getattr(triplet, 'confidence', 1.0)
-                        evidence = getattr(triplet, 'evidence', "")
-                    
-                    if source and relation and target:
-                        # Standardize upstream
-                        source = standardize_label(source)
-                        target = standardize_label(target)
-                        relation = standardize_label(relation)
-                        source_type = standardize_label(source_type) if source_type else "ENTITY"
-                        target_type = standardize_label(target_type) if target_type else "ENTITY"
-                        
-                        props = {
-                            "confidence": confidence,
-                            "evidence": evidence
-                        }
-                        relations.append((source, relation, target, props))
-                        
-                        if source not in seen_nodes:
-                            nodes_data.append({"id": source, "type": source_type, "properties": {}})
-                            seen_nodes.add(source)
-                        if target not in seen_nodes:
-                            nodes_data.append({"id": target, "type": target_type, "properties": {}})
-                            seen_nodes.add(target)
-                        
-            return relations, nodes_data
+            return _parse_dspy_triplets(triplets)
             
         except Exception as e:
             logger.error(f"DSPy extraction failed: {e}", exc_info=True)
             return [], []
 
+class OntologyGuidedDSPyExtractor(BaseExtractor):
+    """DSPy extractor that first matches each chunk to a single ontology.
+
+    Per chunk, the text is embedded and compared against the in-memory
+    ontology registry.  The best-matching ontology's description and label
+    set are fed to a ``dspy.Predict`` signature so extraction is constrained
+    to exactly one ontology's types.  Every emitted triplet is tagged with
+    the matched ontology name for provenance.
+
+    Ontology matching + the LLM assign entity types directly, so the GLiNER
+    NER-hint step is redundant and is skipped for this backend.
+    """
+
+    requires_ner_hints = False
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        model = configure_dspy_lm(config, purpose="extraction")
+        self.module = OntologyGuidedExtractorModule()
+
+        extraction_cfg = config.get('extraction', {})
+        if hasattr(extraction_cfg, 'model_dump'):
+            extraction_cfg = extraction_cfg.model_dump()
+        ontology_cfg = extraction_cfg.get('ontology', {}) or {}
+
+        embedding_cfg = config.get('embedding', {})
+        if hasattr(embedding_cfg, 'model_dump'):
+            embedding_cfg = embedding_cfg.model_dump()
+        embed_model = embedding_cfg.get('model_name', 'all-MiniLM-L6-v2')
+
+        from graphgen.pipeline.entity_relation.ontology_matcher import OntologyRegistry
+
+        self.registry = OntologyRegistry(
+            ontology_dir=ontology_cfg.get('ontology_dir', 'input/ontology/cdm-4.13.2'),
+            embed_model_name=embed_model,
+            top_level_only=ontology_cfg.get('top_level_only', True),
+            min_subclasses=ontology_cfg.get('min_subclasses', 0),
+            include_local_names=ontology_cfg.get('include_local_names', True),
+            max_labels=ontology_cfg.get('max_labels', 60),
+            match_threshold=ontology_cfg.get('match_threshold', 0.15),
+        ).build()
+
+        # Fallback labels when no ontology clears the match threshold.
+        from graphgen.utils.labels import resolve_entity_labels
+        self.fallback_labels = resolve_entity_labels(extraction_cfg)
+
+        logger.info(
+            "Initialized OntologyGuidedDSPyExtractor with model %s (%d ontologies).",
+            model,
+            len(self.registry.entries),
+        )
+
+    async def extract_relations(
+        self,
+        text: str,
+        custom_prompt: ChatPromptTemplate = None,
+        keywords: List[str] = None,
+        entities: List[str] = None,
+        abstract_concepts: List[str] = None,
+    ) -> Tuple[List[Tuple[str, str, str, Dict[str, Any]]], List[Dict[str, Any]]]:
+        if not text or not text.strip():
+            return [], []
+
+        entry, sim = self.registry.match(text)
+        if entry is not None:
+            description = entry.description or entry.name
+            labels = entry.labels
+            ontology_name = entry.name
+        else:
+            # No ontology cleared the threshold — fall back to the merged label
+            # set so extraction still runs, tagged as 'unmatched'.
+            description = "General knowledge extraction (no specific ontology matched)."
+            labels = abstract_concepts or self.fallback_labels
+            ontology_name = None
+
+        try:
+            def _extract_sync():
+                prediction = self.module(
+                    text=text,
+                    ontology_description=description,
+                    ontology_labels=labels,
+                )
+                return prediction.triplets
+
+            triplets = await asyncio.to_thread(_extract_sync)
+        except Exception as e:
+            logger.error(f"Ontology-guided extraction failed: {e}", exc_info=True)
+            return [], []
+
+        relations, nodes_data = _parse_dspy_triplets(triplets)
+
+        # Tidy provenance: tag every relation and node with the matched ontology
+        # and the match similarity.
+        for _, _, _, props in relations:
+            props["ontology"] = ontology_name
+            props["ontology_match_similarity"] = round(float(sim), 4)
+        for node in nodes_data:
+            node["properties"]["ontology"] = ontology_name
+
+        logger.debug(
+            "Chunk matched ontology '%s' (sim=%.3f): %d relations, %d nodes.",
+            ontology_name, sim, len(relations), len(nodes_data),
+        )
+        return relations, nodes_data
+
+
 def get_extractor(config: Dict[str, Any]) -> BaseExtractor:
     """
     Factory function to get the appropriate extractor based on config.
-    
+
     Args:
         config: Configuration dictionary
-        
+
     Returns:
         Configured extractor instance
     """
@@ -347,12 +446,15 @@ def get_extractor(config: Dict[str, Any]) -> BaseExtractor:
     extraction_config = config.get('extraction', {})
     if hasattr(extraction_config, 'model_dump'):
         extraction_config = extraction_config.model_dump()
-        
+
     extractor_type = extraction_config.get('backend', 'dspy') # Default to dspy now
-    
+
     logger.info(f"Initializing graph extractor: {extractor_type}")
-    
+
+    if extractor_type in ('ontology_dspy', 'ontology'):
+        return OntologyGuidedDSPyExtractor(config)
+
     if extractor_type == 'dspy':
         return DSPyExtractor(config)
-    
+
     return LangChainExtractor(config)

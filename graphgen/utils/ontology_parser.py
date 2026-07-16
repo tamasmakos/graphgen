@@ -241,6 +241,131 @@ class OntologyLabelExtractor:
         }
 
 
+def _label_for(graph: "Graph", uri: "URIRef") -> Optional[str]:
+    """Return the preferred (English) rdfs:label for *uri*, or None."""
+    labels = list(graph.objects(uri, RDFS.label))
+    if not labels:
+        return None
+    for label in labels:
+        if isinstance(label, Literal) and (label.language == "en" or not label.language):
+            return str(label)
+    return str(labels[0])
+
+
+def _format_local_name(name: str) -> str:
+    """Turn a URI local name (camelCase / snake_case / hyphen) into words."""
+    import re
+
+    name = name.replace("_", " ").replace("-", " ")
+    name = re.sub(r"([a-z])([A-Z])", r"\1 \2", name)
+    return " ".join(name.split()).title()
+
+
+def extract_ontology_file_metadata(
+    rdf_file: str,
+    top_level_only: bool = True,
+    min_subclasses: int = 0,
+    include_local_names: bool = True,
+    max_labels: int = 60,
+) -> Optional[dict]:
+    """Parse a single RDF/OWL file into matcher-ready metadata.
+
+    Extracts the ontology-level title/description (from ``dcterms`` /
+    ``dc`` / ``rdfs:comment``) and the set of class labels contained in
+    that one file.  Files with no named classes return ``None`` (there is
+    nothing to extract against them).
+
+    Args:
+        rdf_file: Path to a single ``.rdf`` file.
+        top_level_only: Only keep classes with no named superclass.
+        min_subclasses: Only keep classes with at least this many children.
+        include_local_names: Fall back to a formatted URI local name when a
+            class has no ``rdfs:label``.
+        max_labels: Cap on the number of labels returned (shortest first, so
+            broad top-level types are preferred over deep technical ones).
+
+    Returns:
+        Dict with ``name``, ``title``, ``description``, ``labels`` and
+        ``n_classes`` — or ``None`` if the file cannot be parsed or holds
+        no classes.
+    """
+    from rdflib import BNode
+    from rdflib.namespace import DCTERMS
+
+    dc_title = URIRef("http://purl.org/dc/elements/1.1/title")
+    dc_description = URIRef("http://purl.org/dc/elements/1.1/description")
+
+    path = Path(rdf_file)
+    graph = Graph()
+    try:
+        graph.parse(path, format="xml")
+    except Exception as e:
+        logger.warning("Could not parse ontology file %s: %s", path.name, e)
+        return None
+
+    exclude_classes = {
+        OWL.Thing, OWL.Nothing, OWL.NamedIndividual,
+        RDFS.Resource, RDFS.Class, OWL.Class,
+    }
+
+    all_classes = set(graph.subjects(RDF.type, OWL.Class)) | set(
+        graph.subjects(RDF.type, RDFS.Class)
+    )
+
+    labels: Set[str] = set()
+    for cls in all_classes:
+        if isinstance(cls, BNode) or cls in exclude_classes:
+            continue
+        parents = list(graph.objects(cls, RDFS.subClassOf))
+        named_parents = [p for p in parents if isinstance(p, URIRef) and p not in exclude_classes]
+        if top_level_only and named_parents:
+            continue
+        if min_subclasses > 0:
+            children = list(graph.subjects(RDFS.subClassOf, cls))
+            if len(children) < min_subclasses:
+                continue
+        label = _label_for(graph, cls)
+        if label:
+            label = label.strip()
+            if len(label) > 1:
+                labels.add(label)
+        elif include_local_names:
+            local = str(cls).split("#")[-1].split("/")[-1]
+            readable = _format_local_name(local)
+            if len(readable) > 1 and any(c.isalpha() for c in readable):
+                labels.add(readable)
+
+    if not labels:
+        return None
+
+    # Ontology-level title & description.
+    onts = list(graph.subjects(RDF.type, OWL.Ontology))
+    title = ""
+    description = ""
+    if onts:
+        o = onts[0]
+        for pred in (DCTERMS.title, dc_title, RDFS.label):
+            vals = list(graph.objects(o, pred))
+            if vals:
+                title = str(vals[0]).strip()
+                break
+        for pred in (DCTERMS.description, dc_description, RDFS.comment):
+            vals = list(graph.objects(o, pred))
+            if vals:
+                description = str(vals[0]).strip()
+                break
+
+    sorted_labels = sorted(labels, key=lambda s: (len(s), s))[:max_labels]
+
+    return {
+        "name": title or path.stem,
+        "title": title,
+        "description": description,
+        "labels": sorted_labels,
+        "n_classes": len(all_classes),
+    }
+
+
 def extract_ontology_labels(
     ontology_dir: str,
     namespace_filter: Optional[str] = None,
