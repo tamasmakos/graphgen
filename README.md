@@ -1,266 +1,59 @@
-# GraphGen: Knowledge Graph Generation Package
+# From Discourse to Structure
 
-## Schema Structure
-The Knowledge Graph follows a strict hierarchy:
-`DOC` -> `SEGMENT` (Line) -> `CHUNK` (Split) -> `ENTITY` -> `TOPIC`
+**A Knowledge Graph-Based Approach to Topic Modeling in Political Debate**
 
-- **DOC**: Represents a source file.
-- **SEGMENT**: Represents a single line from the source file.
-- **CHUNK**: A lexical split of the segment (for embedding/extraction).
-- **ENTITY**: Extracted named entity.
-- **TOPIC**: Hierarchical topic cluster.
+This is the research repository for a master's thesis investigating whether political
+topics can be recovered by building an LLM-extracted knowledge graph from parliamentary
+speeches and detecting communities within it — an explicitly *structural* alternative to
+probabilistic topic models such as LDA.
 
-## Iterative Experimentation
-The pipeline supports iterative processing of segments to simulate graph growth. 
-This mode includes automatic upload of the final cumulative graph to the configured database (Neo4j/FalkorDB).
+The method is applied to the European Parliament's *This is Europe* debate series
+(13 EU leaders, 2022–2024) and validated against the independent expert analysis of the
+European Parliamentary Research Service (EPRS).
 
-This python package provides a highly flexible pipeline for generating Knowledge Graphs from raw text data. It is designed to be modular, decoupling the lexical graph construction from semantic entity extraction.
+## Findings (full-corpus run)
 
-## 📦 Installation
+- **Scale-free graph** (7,975 nodes; Clauset MLE α ≈ 2.38, KS = 0.023) — the extraction
+  preserves genuine discourse structure.
+- **node2vec edge reweighting** lifts Leiden modularity **0.702 → 0.812** (+15.7%),
+  confirmed by a permutation test (*p* < 0.001) and a 20-seed stability analysis (*d* = 58.9).
+- **EPRS alignment**: all six recurring expert themes recovered (100% coverage).
+- **LDA baseline** on the same corpus is beaten on coverage, alignment, and stability.
 
-This package uses `pyproject.toml` configuration.
+## Pipeline
+
+Text → knowledge graph → topics, in seven stages (`graphgen/`, orchestrated by `orchestrator.py`):
+
+1. **Chunking** — speeches split into 512-char chunks (64 overlap) → ~2,085 chunks.
+2. **Ontology matching** — each chunk is embedded and matched to the best-fitting ontology
+   (EU CDM family + related vocabularies), which supplies its permitted entity types.
+3. **Extraction** — a typed DSPy signature prompts an LLM (Llama-3.3-70B via OpenRouter) to emit
+   Pydantic-validated `(source, relation, target)` triplets; entity *types* are ontology-constrained,
+   relations emerge freely.
+4. **Resolution & pruning** — entities merged in three passes (acronym, containment, semantic
+   cosine > 0.95; 5,321 → 4,841); low-confidence edges and isolated nodes dropped.
+5. **Community detection** — Leiden (resolution 0.5, seed 42) on the graph, with **node2vec**
+   structural embeddings reweighting edges beforehand; applied hierarchically → 99 topics, 683 subtopics.
+6. **Summarisation** — each community summarised bottom-up by the LLM into a titled, evidence-grounded report.
+7. **Analytics** — scale-free fit, modularity uplift + significance tests, silhouette, centrality,
+   and EPRS ground-truth alignment (all written to `output/thesis_outputs/`).
+
+## Layout
+
+| Path | Contents |
+|------|----------|
+| `thesis/` | Thesis manuscript (`main_final.tex` / `.pdf`), figures, EPRS ground truth |
+| `graphgen/` | The pipeline: extraction → resolution → community detection → summarisation → analytics |
+| `input/` | Corpus (translated speeches) and ontologies |
+| `output/thesis_outputs/` | Canonical run artifacts — graph, plots, community/topic CSVs, ground-truth alignment |
+
+## Reproducing the pipeline
 
 ```bash
 pip install -e .
+graphgen            # runs the pipeline per config.yaml
 ```
 
-## 🚀 Usage
-
-You can run the pipeline directly via the command line interface:
-
-```bash
-graphgen
-```
-
-## Logging & Verbosity
-
-GraphGen uses Python logging and writes to stdout by default.
-
-- **Default level**: INFO
-- **Enable debug logs**: set `debug: true` under the root of `config.yaml`
-- **Docker**: view logs with `docker compose logs -f <service>`
-
-CLI utilities in `graphgen/tools/` and plotting scripts use the same logging format.
-
-### Configuration
-
-GraphGen uses a dual configuration system:
-1.  **`config.yaml`**: For Application Logic, Schema Definition, and Defaults.
-2.  **`.env`**: For Secrets (API Keys) and Infrastructure Overrides (Hosts, Ports).
-
-#### config.yaml Example
-```yaml
-# Infrastructure
-infra:
-  graph_db_type: "neo4j" # options: "falkordb", "neo4j"
-  neo4j_host: "neo4j"
-  neo4j_port: 7687
-  clean_start: true # options: true, false (wipe DB before run)
-
-# Extraction Settings
-extraction:
-  file_pattern: "*.txt" # IMPORTANT: Match your input files
-  backend: "spacy"  # options: "gliner", "spacy", "llm"
-  gliner_model: "urchade/gliner_medium-v2.1"  # GLiNER model for entity extraction
-  device: "cuda"  # options: "auto", "cuda", "cpu"
-  use_onnx: false # Set to true to leverage onnxruntime-gpu
-  gliner_labels:  # Entity types when using GLiNER backend
-    - "Person"
-    - "Organization"
-    - "Location"
-    - "Event"
-
-# Schema Definition (Dynamic)
-schema:
-  nodes:
-    Doc:
-      label: "Document"
-      source_type: "document"
-      attributes: ["filename"]
-    Chunk:
-      label: "Chunk"
-      source_type: "chunk"
-  edges:
-    - source_label: "Doc"
-      target_label: "Chunk"
-      relation_type: "HAS_CHUNK"
-      is_hierarchical: true
-```
-
-## 🏗️ Architecture & Modules
-
-The package is organized into the following core components:
-
-### Core (`graphgen.types`)
-- **`PipelineContext`**: The central "bus" object that holds the state (NetworkX graph, stats, errors) and is passed between all pipeline steps.
-- **`ChunkExtractionTask`**: A Pydantic model representing a single unit of text to be processed for entity extraction.
-- **`SegmentData`**: Data model representing a document segment.
-
-### Configuration (`graphgen.config`)
-- **`settings.py`**: Pydantic models (InfrastructureSettings, LLMSettings, **KGESettings**, **AnalysisSettings**, **TestModeSettings**) for validated configuration.
-- **`loader.py`**: Logic to load and merge YAML configuration.
-- **`schema.py`**: Pydantic models (`GraphSchema`, `NodeSchema`) for defining the target graph structure dynamically.
-
-### Pipeline Components (`graphgen.pipeline`)
-- **`lexical_graph_building.builder`**: Scans input files and constructs the initial graph structure based on the Schema.
-- **`entity_relation.extraction`**: Orchestrates entity extraction from text chunks using configured backends (Spacy, GLiNER, LLM).
-- **`entity_relation.extractors`**: Contains specific extractor implementations.
-- **`graph_cleaning.resolution`**: Handles entity resolution and merging.
-- **`summarization.core`**: **[NEW]** Hierarchical summarization module. Generates titles and summaries for topics and subtopics using LLMs. Optimized for label robustness, handling variations like `Chunk` and `NamedEntity`.
-- **`analysis.topic_separation`**: **[NEW]** Statistical analysis of topic/community embedding separation. Implements silhouette scores, MANOVA, and pairwise tests to verify semantic clustering. Gracefully handles small sample sizes and singleton clusters by skipping inapplicable tests.
-
-### Utilities (`graphgen.utils`)
-- **`graphdb.uploader`**: Handles bulk uploading of the NetworkX graph to FalkorDB (RedisGraph) and hybrid vector storage in Postgres.
-- **`graphdb.neo4j_adapter`**: Adapter for uploading graphs to Neo4j, including vector index management.
-- **`ontology_parser`**: `OntologyLabelExtractor` for parsing RDF/OWL ontologies and extracting class labels.
-- **`labels`**: `resolve_gliner_labels()` for resolving GLiNER labels from manual config, ontology, or merged sources.
-- **`parsers.custom`**: `RegexParser` for flexible text segmentation based on configurations.
-- **`parsers.life`**: Support for parsing LifeLog CSVs.
-
-## ⚙️ Advanced Configuration
-
-### Test Mode
-
-Enable test mode to limit the number of documents processed, useful for quick testing and development:
-
-```yaml
-test_mode:
-  enabled: true  # Toggle test mode
-  max_documents: 5  # Process only this many documents (0 = no limit)
-```
-
-When enabled with `max_documents > 0`, the pipeline will only process the specified number of documents from the input directory. Set `max_documents: 0` or `enabled: false` to process all documents normally.
-
-### Entity Extraction & Ontology Integration
-
-GraphGen supports a robust entity extraction pipeline that combines rapid NER models (GLiNER/Spacy) with high-precision LLM extraction, all governed by your domain ontology.
-
-#### Unified Label Configuration
-Manual labels and ontology-derived classes are consolidated into a single master set of `entity_labels`.
-
-```yaml
-extraction:
-  backend: "gliner" # Recommended for large volumes
-  entity_labels: ["Person", "Organization"] # Base types
-  
-  ontology:
-    enabled: true
-    ontology_dir: "/app/input/ontology/cdm-4.13.2"
-    top_level_only: true # Extract only high-level categories
-    min_subclasses: 1    # Filter for broad organizational nodes
-```
-
-#### 🛡️ NER Gatekeeper Logic (Precision Mode)
-The pipeline uses a "gatekeeper" architecture to ensure high precision and strictly valid graphs:
-1.  **Discovery**: GLiNER/Spacy scans a text chunk for all classes defined in the ontology.
-2.  **Schema Filtering**: The extraction schema for that specific chunk is dynamically restricted to *only* the classes discovered in step 1.
-3.  **Strict LLM Extraction**: The LLM acts as the final extractor, operating in `strict_mode=True`. It identifies relationships and instances but is strictly constrained to the ontology types verified by the NER gatekeeper.
-4.  **Classification**: Entities are automatically tagged with their validated `ontology_class` (from the LLM) and the original `gliner_type` (from the NER step), enabling seamless integration with existing RDF/OWL knowledge bases while preserving detection traceability.
-
-### Community Detection (Optimized)
-
-The pipeline uses the Leiden algorithm for community detection, optimized for consistency and quality:
-
-```yaml
-community:
-  resolutions: [0.5, 0.75, 1.0, 1.25, 1.5] # Multiple resolutions to try
-  n_iterations: 10 # Runs per resolution to find stable partition
-  min_community_size: 3 # Merges tiny communities into neighbors
-  seed: 42 # For reproducible partitions
-```
-
-## Tasks
-- [x] Research and Planning
-- [x] Create verification script
-- [x] Update `Dockerfile` to CUDA-enabled base image
-- [x] Update `docker-compose.yaml` with GPU reservations
-- [x] Verify GPU availability in container
-- [x] Update README.md
-
-When running, the detector:
-1. Performs a grid search over the specified `resolutions`.
-2. For each resolution, runs the Leiden algorithm `n_iterations` times.
-3. Selects the partition with the highest modularity.
-4. Optionally merges small communities based on `min_community_size`.
-5. Recalculates modularity after any post-processing.
-
-### Statistical Analysis
-
-The pipeline can run statistical tests to verify that communities form distinct semantic clusters:
-
-```yaml
-analysis:
-  topic_separation_test: true  # Enable statistical tests
-  output_file: "topic_separation_stats.json"
-  hierarchy_levels:
-    - "COMMUNITY"
-    - "SUBCOMMUNITY"
-```
-
-Output includes:
-- **Silhouette Score**: Measures cluster quality (-1 to 1, higher is better)
-- **MANOVA Approximation**: Tests if community centroids differ significantly
-- **Pairwise Comparisons**: Bonferroni-corrected t-tests between community pairs
-- **PCA Variance**: Explained variance ratios for embedding space
-
-## 🛠️ Developer Notes
-
-### Adding a New Parser
-Inherit from `graphgen.utils.parsers.base.BaseDocumentParser` and implement the `parse` method. Then register it or use it in the pipeline configuration.
-
-### Customizing the Pipeline
-The `KnowledgePipeline` class in `graphgen.orchestrator.py` defines the sequence of steps. You can subclass it or modify the `run` method to inject new steps (e.g. specialized topic modeling).
-
-### Pipeline Steps (in order)
-1. **Lexical Graph Building**: Document parsing and chunking
-2. **Entity Extraction**: NLP-based entity and relation extraction
-3. **Semantic Enrichment**: RAG embeddings and entity resolution
-4. **Community Detection**: Leiden algorithm
-5. **Topic Analysis** (optional): Statistical separation tests
-6. **Pruning**: Graph cleanup
-7. **Upload**: Database persistence
-8. **Artifacts**: GraphML and report generation
-
----
-
-## 🚀 GPU Setup & Troubleshooting
-
-If you are using the GLiNER backend and want to leverage GPU acceleration, follow these steps:
-
-### 1. Prerequisites
-- Ensure **NVIDIA Drivers** are installed on your host machine.
-- Ensure the **NVIDIA Container Toolkit** is installed and configured for Docker.
-
-### 2. Update Environment
-After updating the `Dockerfile` and `docker-compose.yaml`, you must rebuild your containers:
-
-```bash
-docker compose down
-docker compose up -d --build
-```
-
-### 3. Verify GPU Availability
-Run the included verification script inside the container:
-
-```bash
-docker compose exec dev python3 tests/verify_gpu.py
-```
-
-This script checks:
-1. If PyTorch can detect the GPU.
-2. If GLiNER can successfully load onto the CUDA device.
-
-If you see "ERROR: CUDA is not available", double-check your host's NVIDIA driver installation and ensure Docker is allowed to access the GPU.
-
-## Visualization Tools
-
-### Evolution of Modularity vs Topic Overlap
-To analyze how community structure (Modularity) and semantic topic distinctness (Topic Overlap) evolve over iterations, use the provided visualization script:
-
-```bash
-python3 tools/visualize_evolution.py --csv output/iterative_experiment_results.csv --output output/modularity_vs_overlap.png
-```
-
-This generates a dual-axis plot showing:
-- **Modularity (Blue)**: Structural quality of communities (higher is better).
-- **Topic Overlap (Red)**: Semantic similarity between topics (lower is usually better/more distinct).
+Configuration is split between `config.yaml` (pipeline logic, schema, defaults) and
+`.env` (API keys, infrastructure). Extraction uses an LLM via OpenRouter; see `config.yaml`
+for models and parameters.
