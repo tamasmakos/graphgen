@@ -213,6 +213,55 @@ class CommunityDetector:
         }
 
 
+    def modularity_distribution(
+        self,
+        graph: nx.Graph,
+        n_runs: int = 20,
+        base_seed: int = 1000,
+        resolution: Optional[float] = None,
+    ) -> List[float]:
+        """Run Leiden ``n_runs`` times with distinct seeds and return the
+        resulting modularity values.
+
+        Used to characterise the run-to-run *variance* of the partition
+        quality so that a claimed modularity difference (e.g. the Node2Vec
+        uplift) can be tested against seed noise rather than reported as a
+        single point estimate.  The edge ``weight`` attribute already on
+        the graph is respected, so calling this on the unweighted-baseline
+        copy vs. the Node2Vec-weighted graph yields the two distributions
+        needed for a significance test.
+        """
+        entity_graph = self._get_entity_graph(graph)
+        if entity_graph.number_of_nodes() < 3 or entity_graph.number_of_edges() == 0:
+            return []
+
+        if resolution is not None:
+            res = resolution
+        elif self.settings:
+            resolutions = getattr(self.settings, "resolutions", [1.0]) or [1.0]
+            res = resolutions[0]
+        else:
+            res = 1.0
+
+        min_comm_size = getattr(self.settings, "min_community_size", 1) if self.settings else 1
+
+        mods: List[float] = []
+        for i in range(n_runs):
+            part, _ = self.run_leiden(entity_graph, resolution=res, seed=base_seed + i)
+            if min_comm_size > 1:
+                part = self._merge_small_communities(entity_graph, part, min_comm_size)
+            try:
+                community_sets = defaultdict(set)
+                for node, comm in part.items():
+                    community_sets[comm].add(node)
+                m = nx.algorithms.community.modularity(
+                    entity_graph, list(community_sets.values())
+                )
+                mods.append(float(m))
+            except Exception:
+                logger.debug("modularity_distribution: run %d failed.", i, exc_info=True)
+        return mods
+
     def _merge_small_communities(self, g: nx.Graph, partition: Dict[str, int], min_size: int) -> Dict[str, int]:
         """Merge communities smaller than min_size into the best neighboring community."""
         if min_size <= 1:

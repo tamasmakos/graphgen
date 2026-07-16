@@ -16,8 +16,31 @@ def add_enhanced_community_attributes_to_graph(
     Expects subcommunities mapping: entity_id -> (parent_community_id, local_sub_id).
     """
     logger.info("Creating proper topic hierarchy: Entities->Subtopics->Parent Topics...")
-    
-    # Create ParentTopic nodes  
+
+    # --- Write community membership back onto the entity nodes themselves ---
+    # Downstream analytics (the Node2Vec permutation test, the centrality CSV
+    # export, the interactive explorer colouring) read ``community_id`` /
+    # ``subcommunity_id`` directly off the entity nodes.  Detection only returns
+    # an assignments dict, so without this loop those attributes are never set
+    # and every consumer silently sees "no community assignments".
+    entity_types = {"ENTITY_CONCEPT", "PLACE", "ENTITY", "NAMEDENTITY"}
+    entities_labelled = 0
+    for node_id, comm_id in communities.items():
+        if node_id not in graph:
+            continue
+        node_data = graph.nodes[node_id]
+        if str(node_data.get("node_type", "")).upper() not in entity_types:
+            continue
+        node_data["community_id"] = int(comm_id)
+        sub_pair = subcommunities.get(node_id)
+        if sub_pair is not None:
+            _, local_sub_id = sub_pair
+            if local_sub_id is not None and local_sub_id != -1:
+                node_data["subcommunity_id"] = int(local_sub_id)
+        entities_labelled += 1
+    logger.info("Tagged %d entity nodes with community_id.", entities_labelled)
+
+    # Create ParentTopic nodes
     topic_nodes_created = 0
     unique_communities = set(communities.values())
     for comm_id in unique_communities:
