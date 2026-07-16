@@ -3,8 +3,11 @@ Unified Entity Resolution Module.
 
 This module handles:
 1. Fast string-based coreference resolution (for initial extraction).
-2. Semantic entity resolution using vector embeddings (for graph refinement).
-3. Merging of identical entities to keep the graph clean.
+2. Multi-strategy global entity resolution (for graph refinement):
+   - Stage 1: Deterministic Acronym/Abbreviation Resolution
+   - Stage 2: Substring Containment Resolution
+   - Stage 3: Embedding-Based Semantic Resolution
+   - Stage 4: Title/Role Coreference Resolution
 """
 
 import logging
@@ -13,200 +16,14 @@ import numpy as np
 import networkx as nx
 from typing import Dict, List, Set, Tuple, Any, Optional
 from difflib import SequenceMatcher
-from graphgen.utils.utils import merge_node_into
-from dataclasses import dataclass, field
 from collections import defaultdict
+from itertools import combinations
+
+from graphgen.utils.utils import merge_node_into, get_spacy_model
 
 logger = logging.getLogger(__name__)
 
-# --- Entity Resolution Utilities (Splink-inspired Blocking) ---
-
-@dataclass
-class EntityRecord:
-    id: str
-    text: str
-    type: str
-    cluster_id: str = None  # The final resolved ID
-    embedding: np.ndarray = None
-    structural_embedding: np.ndarray = None # Node2Vec embedding
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-class BlockingResolver:
-    """
-    Implements blocking-based entity resolution to avoid O(N^2) comparisons.
-    """
-    def __init__(self, similarity_threshold: float = 0.90):
-        self.similarity_threshold = similarity_threshold
-        self.records: List[EntityRecord] = []
-        
-    def add_records(self, records: List[EntityRecord]):
-        self.records.extend(records)
-
-    def _get_blocking_keys(self, text: str) -> List[str]:
-        """
-        Generate blocking keys for a record.
-        Smart blocking using:
-        1. First letter + length (simple)
-        2. Metaphone-like (or simple phonetic) if available, otherwise just normalized start.
-        3. Token-based blocking (e.g. "Apple Inc" -> "Apple", "Inc")
-        """
-        keys = set()
-        text = text.lower().strip()
-        
-        # Block 1: First letter (very coarse, but fast)
-        if text:
-            keys.add(f"ALPHA:{text[0]}")
-            
-        # Block 2: Significant Tokens (skipping stop words)
-        tokens = re.split(r'\W+', text)
-        stop_words = {'the', 'a', 'an', 'inc', 'ltd', 'corp', 'company', 'and', 'of'}
-        for t in tokens:
-            if len(t) > 2 and t not in stop_words:
-                keys.add(f"TOKEN:{t}")
-                
-        return list(keys)
-
-    def _compute_similarity(self, rec_a: EntityRecord, rec_b: EntityRecord) -> float:
-        """
-        Compute similarity between two records.
-        Uses embedding cosine similarity if available, otherwise string similarity.
-        """
-        sim_semantic = 0.0
-        has_semantic = False
-        
-        if rec_a.embedding is not None and rec_b.embedding is not None:
-             # Cosine similarity
-            dot = np.dot(rec_a.embedding, rec_b.embedding)
-            norm_a = np.linalg.norm(rec_a.embedding)
-            norm_b = np.linalg.norm(rec_b.embedding)
-            if norm_a > 0 and norm_b > 0:
-                sim_semantic = dot / (norm_a * norm_b)
-                has_semantic = True
-        
-        sim_structural = 0.0
-        has_structural = False
-        
-        if rec_a.structural_embedding is not None and rec_b.structural_embedding is not None:
-             # Cosine similarity for structural
-            dot = np.dot(rec_a.structural_embedding, rec_b.structural_embedding)
-            norm_a = np.linalg.norm(rec_a.structural_embedding)
-            norm_b = np.linalg.norm(rec_b.structural_embedding)
-            if norm_a > 0 and norm_b > 0:
-                sim_structural = dot / (norm_a * norm_b)
-                has_structural = True
-                
-        # Combine similarities
-        if has_semantic and has_structural:
-            # Weighted average: 70% Semantic, 30% Structural
-            # Structural confirms they play same role, Semantic confirms they mean same thing
-            return (0.7 * sim_semantic) + (0.3 * sim_structural)
-        elif has_semantic:
-            return sim_semantic
-        elif has_structural:
-            # Only structural is risky for ER (two different people might have same role)
-            # So we penalize it or treat as weak signal
-            return sim_structural * 0.8 # Penalize pure structural match
-
-        
-        # 2. String Similarity
-        # a) Normal SequenceMatcher
-        text_a = rec_a.text.lower()
-        text_b = rec_b.text.lower()
-        seq_sim = SequenceMatcher(None, text_a, text_b).ratio()
-        if seq_sim >= self.similarity_threshold:
-            return seq_sim
-            
-        # b) Token Set Similarity (for "Apple" vs "Apple Inc.")
-        # Re-use the module-level helper if possible, or reimplement simple version
-        tok_sim = _token_similarity(text_a, text_b)
-        if tok_sim >= self.similarity_threshold:
-            return tok_sim
-            
-        # c) Substring / Prefix bias
-        # If one is a prefix of another and length difference is small?
-        if text_a.startswith(text_b) or text_b.startswith(text_a):
-             return max(seq_sim, 0.85) # Boost prefix matches
-             
-        return seq_sim
-
-    def resolve(self) -> Dict[str, str]:
-        """
-        Run resolution.
-        Returns a mapping of original_id -> resolved_id
-        """
-        # 1. Create Blocks
-        blocks = defaultdict(list)
-        for rec in self.records:
-            keys = self._get_blocking_keys(rec.text)
-            for k in keys:
-                blocks[k].append(rec)
-                
-        logger.info(f"Created {len(blocks)} blocks for {len(self.records)} records.")
-        
-        # 2. Compare within blocks (Union-Find structure for clustering)
-        parent = {r.id: r.id for r in self.records}
-        
-        def find(i):
-            if parent[i] != i:
-                parent[i] = find(parent[i])
-            return parent[i]
-            
-        def union(i, j):
-            root_i = find(i)
-            root_j = find(j)
-            if root_i != root_j:
-                parent[root_j] = root_i # arbitrary merge
-                
-        # To avoid re-comparing pairs, we can track seen pairs
-        seen_pairs = set()
-        
-        comparisons = 0
-        matches = 0
-        
-        for block_key, block_records in blocks.items():
-            # If block is too huge, we might skip or sub-block, but for now just process
-            n = len(block_records)
-            if n < 2: continue
-            
-            # Simple pairwise within block
-            # For massive blocks, we would use nearest neighbors here
-            for i in range(n):
-                for j in range(i + 1, n):
-                    rec_a = block_records[i]
-                    rec_b = block_records[j]
-                    
-                    pair_id = tuple(sorted((rec_a.id, rec_b.id)))
-                    if pair_id in seen_pairs:
-                        continue
-                    seen_pairs.add(pair_id)
-                    comparisons += 1
-                    
-                    sim = self._compute_similarity(rec_a, rec_b)
-                    
-                    if sim >= self.similarity_threshold:
-                        union(rec_a.id, rec_b.id)
-                        matches += 1
-                        
-        logger.info(f"Resolution stats: {comparisons} comparisons, {matches} merges found.")
-        
-        # 3. Canonicalize
-        # Group by root
-        clusters = defaultdict(list)
-        resolved_map = {} # original_id -> canonical_id
-        
-        for rec in self.records:
-            root = find(rec.id)
-            clusters[root].append(rec)
-            
-        for root, group in clusters.items():
-            # Pick canonical: Longest name
-            canonical = max(group, key=lambda r: len(r.text))
-            for member in group:
-                resolved_map[member.id] = canonical.text # Map to Name, not ID (or ID if preferred)
-                
-        return resolved_map
-
-# --- Part 1: String-Based Helpers (formerly coref.py) ---
+# --- Part 1: String-Based Helpers & Lightweight Extraction Coref ---
 
 def _canonicalize_entity_name(name: str) -> str:
     """
@@ -219,44 +36,149 @@ def _canonicalize_entity_name(name: str) -> str:
         return ""
     name = name.lower().strip()
     name = re.sub(r'[^\w\s]', '', name)
-    # Simple singularization (can be improved)
-    # if name.endswith('s') and not name.endswith('ss'):
-    #     name = name[:-1]
     return name
 
-def _string_similarity(a: str, b: str) -> float:
-    """Calculate string similarity using SequenceMatcher"""
-    return SequenceMatcher(None, a, b).ratio()
-
-def _token_similarity(a: str, b: str) -> float:
+def _get_acronym_candidates(text: str) -> List[str]:
     """
-    Calculate token-based similarity (Jaccard index).
-    Handles word reordering (e.g. "President of ECB" vs "ECB President").
+    Generate potential acronyms for a text.
+    E.g. "European_Union" -> ["EU"]
     """
-    set_a = set(a.split())
-    set_b = set(b.split())
+    if not text:
+        return []
     
-    if not set_a or not set_b:
-        return 0.0
+    # Split by non-word chars OR underscores
+    tokens = [t for t in re.split(r'[\W_]+', text) if t]
+    if len(tokens) < 2:
+        return []
         
-    intersection = len(set_a.intersection(set_b))
-    union = len(set_a.union(set_b))
-    
-    return intersection / union if union > 0 else 0.0
+    # Standard First-Letter Acronym
+    acronym = "".join([t[0].upper() for t in tokens])
+    return [acronym]
 
-def _are_coreferent(a: str, b: str, threshold: float) -> bool:
+def _is_acronym_match(short: str, long: str) -> bool:
     """
-    Check if two strings are likely coreferent.
+    Check if 'short' is a valid acronym for 'long'.
     """
-    # 1. Direct string similarity
-    if _string_similarity(a, b) >= threshold:
-        return True
+    # 1. Short must be all clean uppercase and short-ish
+    clean_short = short.strip().replace('.', '').replace(' ', '')
+    if not clean_short.isupper() or len(clean_short) > 6 or len(clean_short) < 2:
+        return False
         
-    # 2. Token-based similarity (slightly higher threshold)
-    if _token_similarity(a, b) >= 0.9: 
+    # 2. Generate candidates from long
+    candidates = _get_acronym_candidates(long)
+    return clean_short in candidates
+
+def _is_numeric_entity(name: str) -> bool:
+    """
+    Return True if an entity name is primarily a numeric/quantitative value.
+    E.g. "150", "2_5_MILLION", "0_2_PERCENT", "30_BILLION".
+    These should never be semantically merged regardless of embedding similarity.
+    """
+    numeric_suffixes = {'BILLION', 'MILLION', 'THOUSAND', 'PERCENT', 'TRILLION', 'HUNDRED'}
+    tokens = name.split('_')
+    if not tokens:
+        return False
+    has_digit_token = any(re.match(r'^\d+$', t) or re.match(r'^\d+[\.,]\d+$', t) for t in tokens)
+    all_numeric_tokens = all(
+        re.match(r'^\d+$', t) or
+        re.match(r'^\d+[\.,]\d+$', t) or
+        t in numeric_suffixes
+        for t in tokens
+    )
+    return has_digit_token and all_numeric_tokens
+
+
+def _is_safe_substring_merge(
+    child: str,
+    parent: str,
+    child_degree: int = 0,
+    parent_degree: int = 0
+) -> bool:
+    """
+    Check if merging 'child' into 'parent' is semantically safe.
+
+    Three layered guards, ordered cheapest-to-most-expensive:
+
+    Guard 1 — Long-phrase absorption:
+        A single-token child being absorbed by a phrase with 3+ extra tokens is
+        almost always a generic common noun swallowed by a specific description
+        (e.g. WORK -> WORK_OF_THE_CONFERENCE_ON_THE_FUTURE_OF_EUROPE).
+        Only allow it if the child is a short uppercase acronym (≤5 chars) with
+        low independent usage.
+
+    Guard 2 — Adjective-qualifier prefix/suffix:
+        If the parent is "QUALIFIER_CHILD" or "CHILD_QUALIFIER" where the extra
+        token is an adjective or determiner, the parent is a *description* of the
+        child, not a canonical form of it (e.g. STRONG_NATO, POLITICAL_COURAGE,
+        WINNING_STRATEGY). Only allow this merge when the child is barely used
+        standalone (degree ≤ 2) AND the parent is significantly more central.
+
+    Guard 3 — Degree-based importance:
+        If the child node is equally or more connected than the parent, it is the
+        primary concept in the graph. Absorbing it into the parent would destroy
+        information. Require parent to be strictly more central.
+    """
+    try:
+        child_tokens = child.split('_')
+        parent_tokens = parent.split('_')
+        child_token_set = set(child_tokens)
+        extra_tokens = [t for t in parent_tokens if t not in child_token_set]
+
+        # Guard 1: long-phrase absorption of a single common word
+        if len(child_tokens) == 1 and len(extra_tokens) >= 3:
+            # Allow acronym-like strings (short, already all-caps, rarely used alone)
+            is_acronym_like = len(child) <= 5
+            if not is_acronym_like or child_degree > 2:
+                return False
+
+        # Guard 2: POS-based qualifier check (requires spaCy)
+        nlp = get_spacy_model()
+        if nlp and len(child_tokens) == 1 and len(extra_tokens) == 1:
+            extra_word = extra_tokens[0].replace('_', ' ')
+            # Normalize to title-case for better spaCy tagging
+            doc = nlp(extra_word.capitalize())
+            if doc:
+                extra_pos = doc[0].pos_
+                if extra_pos in ('ADJ', 'DET', 'NUM', 'VERB'):
+                    # Parent is "MODIFIER + CHILD" or "CHILD + MODIFIER"
+                    # Only safe if child is obscure (barely connected) and
+                    # parent is clearly more central
+                    child_is_obscure = child_degree <= 2
+                    parent_is_dominant = parent_degree > child_degree * 2
+                    if not (child_is_obscure and parent_is_dominant):
+                        return False
+
+        # Guard 3: degree-based importance
+        # If child is at least as connected as parent, child is the primary concept.
+        if child_degree > 0 and parent_degree > 0:
+            if child_degree >= parent_degree:
+                return False
+
+        # Original root-head check: child should cover the syntactic head of parent
+        if not nlp:
+            return True
+
+        raw_text = parent.replace('_', ' ').strip()
+        if not raw_text:
+            return True
+
+        parent_text = raw_text.title() if raw_text.isupper() else raw_text
+        doc = nlp(parent_text)
+
+        root = next((token for token in doc if token.head == token), None)
+        if not root:
+            return True
+
+        root_text = root.text.lower()
+        root_lemma = root.lemma_.lower()
+        child_clean = child.replace('_', ' ').lower()
+
+        if root_text not in child_clean and root_lemma not in child_clean:
+            return False
+
         return True
-        
-    return False
+    except Exception:
+        return True
 
 def resolve_extraction_coreferences(
     relations: List[Tuple[str, str, str, Dict[str, Any]]], 
@@ -265,21 +187,8 @@ def resolve_extraction_coreferences(
 ) -> Dict[str, Any]:
     """
     Lightweight entity normalization for raw extraction data.
-    
-    Identifies variations of the same name within a single extraction batch
-    and maps them to a single representative.
-    
-    Args:
-        relations: List of (head, relation, tail) triplets
-        entities: List of isolated entity names
-        similarity_threshold: Threshold for string matching (default 0.85)
-
-    Returns:
-        Dictionary containing cleaned relations and entity mappings.
     """
     try:
-        debug_log: List[str] = []
-
         # 1) Collect all surface forms
         originals: Set[str] = set()
         for i, item in enumerate(relations or []):
@@ -294,20 +203,30 @@ def resolve_extraction_coreferences(
         orig_to_canon: Dict[str, str] = {o: _canonicalize_entity_name(o) for o in originals}
         canonicals: List[str] = sorted(set(orig_to_canon.values()))
 
-        # 3) Greedy grouping by similarity
-        # rep_for maps: canonical_string -> representative_canonical_string
+        # 3) Greedy grouping
         rep_for: Dict[str, str] = {}
         representatives: List[str] = []
         
         for c in canonicals:
             placed = False
             for r in representatives:
-                if _are_coreferent(c, r, similarity_threshold):
-                    # Choose longer string as representative (usually more specific)
+                # Similarity match
+                is_match = False
+                
+                # A. String Similarity
+                if SequenceMatcher(None, c, r).ratio() >= similarity_threshold:
+                    is_match = True
+                
+                # B. Acronym Match (Simple)
+                # We need original cases for acronyms, but we only have canonicals here (lowercased)
+                # So we skip strict acronym check here and rely on Stage 1 in global resolution
+                
+                if is_match:
+                    # Choose longer string as representative
                     best = r if len(r) >= len(c) else c
                     
-                    # If representative changes, update everything pointing to old r
                     if best != r:
+                        # Update references to old Rep
                         for k, v in list(rep_for.items()):
                             if v == r:
                                 rep_for[k] = best
@@ -321,16 +240,11 @@ def resolve_extraction_coreferences(
                 representatives.append(c)
                 rep_for[c] = c
 
-        # 4) Final mapping: Original Name -> Final Representative Name
-        # We need to map back to one of the Original Names that corresponds to the Representative
-        # Find best original string for each canonical representative
+        # 4) Final mapping
         canon_to_best_original = {}
         for r in representatives:
-            # Find all originals that map to this canonical rep
             candidates = [o for o, c in orig_to_canon.items() if rep_for.get(c) == r]
             if candidates:
-                # Pick the longest/most capitalized one as the "Display Name"
-                # Heuristic: longest string, then most capital letters
                 best_orig = sorted(candidates, key=lambda x: (len(x), sum(1 for c in x if c.isupper())), reverse=True)[0]
                 canon_to_best_original[r] = best_orig
 
@@ -340,8 +254,6 @@ def resolve_extraction_coreferences(
             final_name = canon_to_best_original.get(rep_canon, o)
             entity_mappings[o] = final_name
 
-        # 5) Remap relations
-        cleaned_set: Set[Tuple[str, str, str]] = set()
         # 5) Remap relations
         cleaned_list: List[Tuple[str, str, str, Dict[str, Any]]] = []
         for item in relations or []:
@@ -353,183 +265,284 @@ def resolve_extraction_coreferences(
                 
             cs = entity_mappings.get(s, s)
             ct = entity_mappings.get(t, t)
-            # Avoid self-loops created by merging
             if not cs or not ct or cs == ct:
                 continue
             cleaned_list.append((cs, r, ct, props))
 
-        cleaned_relations = cleaned_list
-        debug_log.append(f"normalized_entities={len(entity_mappings)} reps={len(representatives)}")
-
         return {
-            'cleaned_relations': cleaned_relations,
+            'cleaned_relations': cleaned_list,
             'entity_mappings': entity_mappings,
-            'debug_log': debug_log,
         }
     except Exception as e:
         logger.warning(f"Lightweight coreference normalization failed: {e}")
-        return {
-            'cleaned_relations': relations,
-            'entity_mappings': {},
-            'debug_log': [f"error: {str(e)}"]
-        }
+        return {'cleaned_relations': relations, 'entity_mappings': {}}
 
 
-# --- Part 2: Embedding-Based Logic (formerly similarity.py + resolution.py) ---
-
-def _compute_similarity_matrix(embeddings: Dict[str, np.ndarray]) -> Tuple[List[str], np.ndarray]:
-    """
-    Compute pairwise cosine similarity matrix.
-    """
-    node_ids = list(embeddings.keys())
-    n = len(node_ids)
-    
-    if n == 0:
-        return [], np.array([])
-    
-    # Stack embeddings
-    embedding_matrix = np.array([embeddings[nid] for nid in node_ids])
-    
-    # Normalize
-    norms = np.linalg.norm(embedding_matrix, axis=1, keepdims=True)
-    norms[norms == 0] = 1
-    normalized = embedding_matrix / norms
-    
-    # Dot product
-    similarity_matrix = np.dot(normalized, normalized.T)
-    
-    return node_ids, similarity_matrix
+# --- Part 2: Global Graph Resolution (Multi-Strategy) ---
 
 def resolve_entities_semantically(
     graph: nx.DiGraph,
-    similarity_threshold: float = 0.95,
+    similarity_threshold: float = 0.85, # Default lowered slightly for embeddings
     node_types: Optional[List[str]] = None,
     structural_embeddings: Optional[Dict[str, np.ndarray]] = None
 ) -> Dict[str, Any]:
     """
-    Identify and MERGE nodes that have very high embedding similarity.
-    Does NOT create edges. Directly merges nodes.
-    
-    Args:
-        graph: The Knowledge Graph (modified in-place).
-        similarity_threshold: Threshold for considering entities identical (default 0.95).
-        node_types: List of node types to consider (default: ['ENTITY_CONCEPT']).
-        
-    Returns:
-        Statistics about the merge operation.
+    Multi-stage entity resolution pipeline.
     """
     if node_types is None:
         node_types = ['ENTITY_CONCEPT']
         
-    logger.info(f"Starting semantic entity resolution (threshold={similarity_threshold})...")
+    logger.info("Starting Multi-Strategy Entity Resolution...")
     
-    # 1. Collect embeddings
-    embeddings: Dict[str, np.ndarray] = {}
-    for node_id, node_data in graph.nodes(data=True):
-        if node_data.get('node_type') in node_types:
-            emb = node_data.get('embedding')
-            if emb is not None:
-                if isinstance(emb, list):
-                    emb = np.array(emb)
-                embeddings[node_id] = emb
-
-    if len(embeddings) < 2:
-        return {'merged_nodes': 0, 'clusters_found': 0}
-
-    # 2. Use BlockingResolver
-    resolver = BlockingResolver(similarity_threshold=similarity_threshold)
-    records = []
-    
-    # Store ID mapping to handle graph nodes
-    id_to_record = {}
-    
-    for nid, emb in embeddings.items():
-        name = graph.nodes[nid].get('name', nid)
-        
-        # Get structural embedding if available
-        struct_emb = structural_embeddings.get(nid) if structural_embeddings else None
-        
-        rec = EntityRecord(id=nid, text=name, type='Entity', embedding=emb, structural_embedding=struct_emb)
-        records.append(rec)
-        id_to_record[nid] = rec
-        
-    resolver.add_records(records)
-    
-    # Run resolution
-    # internal result comes as original_id -> resolved_name
-    # But we want to map original_id -> canonical_id (node ID)
-    
-    # We can peek into BlockingResolver or adapt its output.
-    # Actually, BlockingResolver.resolve() returns ID -> Name.
-    # Let's modify usage or trust the name is the ID if we used IDs as text? 
-    # No, we used names as text.
-    
-    # Let's re-implement the graph merge part using blocking basics here to be precisely controlling node IDs
-    
-    # OR: use the clusters from blocking
-    # The BlockingResolver exposes internal logic? 
-    # Let's just use it as is but re-map back to IDs.
-    
-    # Wait, BlockingResolver logic above returns `resolved_map[member.id] = canonical.text`.
-    # We want canonical ID.
-    # Let's assume for now that if we get names back, we might lose ID mappings if names are ambiguous.
-    # BUT, in `graphgen`, node IDs ARE often the names.
-    # If node IDs are UUIDs, this breaks.
-    # Currently node IDs seem to be Entity Names (extracted string).
-    # So `canonical.text` is likely `canonical.id` effectively.
-    
-    resolved_map = resolver.resolve()
-    
-    # Group by resolved name to find clusters
-    name_to_ids = defaultdict(list)
-    for original_id, resolved_name in resolved_map.items():
-        name_to_ids[resolved_name].append(original_id)
-        
-    clusters = [ids for ids in name_to_ids.values() if len(ids) > 1]
-    
-    logger.info(f"Found {len(clusters)} clusters via blocking resolution.")
-    
-    # 5. Merge Nodes
-    nodes_merged = 0
-    merged_pairs_details = []
-    
-    for cluster in clusters:
-        # Heuristic for Canonical Node:
-        # 1. Highest Degree (most connected)
-        # 2. Longest Name (most descriptive)
-        def get_node_score(nid):
-            degree = graph.degree(nid)
-            name_len = len(graph.nodes[nid].get('name', nid))
-            return (degree, name_len)
+    # Collect candidates
+    nodes = []
+    for n, d in graph.nodes(data=True):
+        if d.get('node_type') in node_types:
+            nodes.append(n)
             
-        canonical_id = max(cluster, key=get_node_score)
+    if len(nodes) < 2:
+        return {'merged_nodes': 0}
         
-        # Log merge
-        cluster_names = [graph.nodes[n].get('name', n) for n in cluster]
-        logger.info(f"Resolving cluster {cluster_names} -> '{canonical_id}'")
-
-        canonical_name = graph.nodes[canonical_id].get('name', canonical_id)
-
-        for node_id in cluster:
-            if node_id == canonical_id:
-                continue
-            
-            merged_name = graph.nodes[node_id].get('name', node_id)
-            merged_pairs_details.append({
-                "canonical_id": canonical_id,
-                "canonical_name": canonical_name,
-                "merged_id": node_id,
-                "merged_name": merged_name
-            })
-                
-            merge_node_into(graph, source_node=node_id, target_node=canonical_id)
-            nodes_merged += 1
-            
-    logger.info(f"Semantic resolution complete. Merged {nodes_merged} nodes.")
-    
-    return {
-        'merged_nodes': nodes_merged,
-        'clusters_found': len(clusters),
-        'high_similarity_pairs': 'N/A (Blocking)',
-        'merged_pairs': merged_pairs_details
+    stats = {
+        'initial_count': len(nodes),
+        'merges_stage_1_acronym': 0,
+        'merges_stage_2_containment': 0,
+        'merges_stage_3_semantic': 0,
+        'removed_stage_4_titles': 0,
+        'merged_pairs_details': []
     }
+    
+    # --- STAGE 1: Acronym/Abbreviation Resolution ---
+    # O(N^2) worst case but N is usually small (<1000 entities per batch)
+    # We can optimize by separating short vs long entities
+    short_entities = [n for n in nodes if len(n) <= 6 and n.isupper()]
+    long_entities = [n for n in nodes if len(n) > 6]
+    
+    # Sort short entities by length desc to handle dependencies
+    short_entities.sort(key=len, reverse=True)
+    
+    for short in short_entities:
+        if not graph.has_node(short): continue
+        
+        best_match = None
+        
+        # Check against all long entities
+        candidates = []
+        for long in long_entities:
+            if not graph.has_node(long): continue
+            
+            if _is_acronym_match(short, long):
+                candidates.append(long)
+                
+        if candidates:
+            # Pick best: most connected or default to first
+            candidates.sort(key=lambda x: graph.degree(x), reverse=True)
+            best_match = candidates[0]
+
+            # Degree guard: if the short form is more connected than the long form,
+            # the short form is the real primary entity in this corpus (e.g. "IT" as
+            # a well-used node is more likely a country code than a coincidental
+            # acronym of some rarely-mentioned phrase).
+            if graph.degree(short) > graph.degree(best_match):
+                logger.info(
+                    f"[Stage 1] Skipping acronym merge {short} -> {best_match}: "
+                    f"short is more central (degree {graph.degree(short)} vs {graph.degree(best_match)})"
+                )
+                continue
+
+            # Merge Short -> Long
+            logger.info(f"[Stage 1] Merging Acronym {short} -> {best_match}")
+            merge_node_into(graph, short, best_match)
+            stats['merges_stage_1_acronym'] += 1
+            stats['merged_pairs_details'].append(f"ACRONYM: {short} -> {best_match}")
+            
+    # Refresh node list after merges
+    nodes = [n for n in nodes if graph.has_node(n)]
+
+
+    # --- STAGE 2: Substring Containment ---
+    # "PARLIAMENT" -> "EUROPEAN_PARLIAMENT"
+    # ONLY if Unambiguous (contained in exactly one parent)
+    
+    # Sort by length ASC (shortest first)
+    nodes.sort(key=len)
+    
+    for i, child in enumerate(nodes):
+        if not graph.has_node(child): continue
+        # Skip if child is very generic or long
+        if len(child.split('_')) > 3: continue
+        
+        child_tokens = set(child.split('_'))
+        if len(child_tokens) == 0: continue
+        
+        parents = []
+        for j in range(i + 1, len(nodes)):
+            parent = nodes[j]
+            if not graph.has_node(parent): continue
+            
+            parent_tokens = set(parent.split('_'))
+            if child_tokens.issubset(parent_tokens) and len(parent_tokens) > len(child_tokens):
+                parents.append(parent)
+                
+        if len(parents) == 1:
+            # Unambiguous containment
+            parent = parents[0]
+            child_deg = graph.degree(child)
+            parent_deg = graph.degree(parent)
+
+            if not _is_safe_substring_merge(child, parent, child_deg, parent_deg):
+                logger.info(f"[Stage 2] Skipping unsafe merge {child} -> {parent} (safety check failed)")
+                continue
+                
+            logger.info(f"[Stage 2] Merging Substring {child} -> {parent}")
+            merge_node_into(graph, child, parent)
+            stats['merges_stage_2_containment'] += 1
+            stats['merged_pairs_details'].append(f"SUBSTRING: {child} -> {parent}")
+            
+        elif len(parents) > 1:
+            # Ambiguous: "UNION" -> "EUROPEAN_UNION", "TRANSFER_UNION"
+            # Check connectivity
+            parents.sort(key=lambda x: graph.degree(x), reverse=True)
+            winner = parents[0]
+            runner_up = parents[1]
+
+            deg_w = graph.degree(winner)
+            deg_r = graph.degree(runner_up)
+            child_deg = graph.degree(child)
+
+            # Only merge if winner is dominant (e.g. degree 10x higher)
+            if deg_w > 5 and deg_w > (deg_r * 3) and _is_safe_substring_merge(child, winner, child_deg, deg_w):
+                logger.info(f"[Stage 2] Merging Ambiguous Substring {child} -> {winner} (Dominant Parent)")
+                merge_node_into(graph, child, winner)
+                stats['merges_stage_2_containment'] += 1
+                stats['merged_pairs_details'].append(f"SUBSTRING_DOMINANT: {child} -> {winner}")
+
+    # Refresh node list
+    nodes = [n for n in nodes if graph.has_node(n)]
+
+    # --- STAGE 3: Semantic Embedding Resolution ---
+    # Collect embeddings
+    valid_nodes = []
+    embeddings = []
+    struc_embeddings = []
+    
+    for n in nodes:
+        emb = graph.nodes[n].get('embedding')
+        if emb is not None and isinstance(emb, np.ndarray):
+            valid_nodes.append(n)
+            embeddings.append(emb)
+            
+            if structural_embeddings and n in structural_embeddings:
+                struc_embeddings.append(structural_embeddings[n])
+            else:
+                struc_embeddings.append(None)
+                
+    if len(valid_nodes) > 1:
+        embeddings = np.array(embeddings)
+        
+        # Helper for combined similarity
+        def calc_similarity(idx_a, idx_b):
+            # Semantic
+            vec_a, vec_b = embeddings[idx_a], embeddings[idx_b]
+            sim_sem = np.dot(vec_a, vec_b) / (np.linalg.norm(vec_a) * np.linalg.norm(vec_b))
+            
+            # Subcomponent 2: String (Jaccard on tokens)
+            name_a, name_b = valid_nodes[idx_a], valid_nodes[idx_b]
+            tokens_a = set(name_a.split('_'))
+            tokens_b = set(name_b.split('_'))
+            inter = len(tokens_a.intersection(tokens_b))
+            union = len(tokens_a.union(tokens_b))
+            sim_str = inter / union if union > 0 else 0.0
+            
+            # Subcomponent 3: Structural
+            sim_struc = 0.0
+            has_structural = False
+            if struc_embeddings[idx_a] is not None and struc_embeddings[idx_b] is not None:
+                s_a, s_b = struc_embeddings[idx_a], struc_embeddings[idx_b]
+                sim_struc = np.dot(s_a, s_b) / (np.linalg.norm(s_a) * np.linalg.norm(s_b))
+                has_structural = True
+            
+            # Weighted Score
+            if has_structural:
+                # 60% Semantic, 20% Structural, 20% String
+                score = (0.6 * sim_sem) + (0.2 * sim_struc) + (0.2 * sim_str)
+            else:
+                # Redistribute structural weight to semantic
+                # 75% Semantic + 25% String
+                score = (0.75 * sim_sem) + (0.25 * sim_str)
+                
+            return score, sim_sem
+            
+        # Pairwise (Blocking optimization skipped for prototype size, just O(N^2) for <500 nodes is fine)
+        merged_in_this_pass = set()
+        
+        for i in range(len(valid_nodes)):
+            if valid_nodes[i] in merged_in_this_pass: continue
+            
+            best_match_idx = -1
+            best_score = -1.0
+            
+            for j in range(i + 1, len(valid_nodes)):
+                if valid_nodes[j] in merged_in_this_pass: continue
+
+                # Numeric guard: quantities like "150_BILLION" and "30_BILLION" have
+                # structurally similar embeddings but represent entirely different values.
+                # Never merge two numeric/quantitative entities regardless of similarity.
+                if _is_numeric_entity(valid_nodes[i]) or _is_numeric_entity(valid_nodes[j]):
+                    continue
+                
+                score, raw_sem = calc_similarity(i, j)
+                
+                # Thresholds
+                # 0.82 Combined Score OR 0.90 Raw Semantic
+                if score > 0.82 or raw_sem > 0.92:
+                    if score > best_score:
+                        best_score = score
+                        best_match_idx = j
+            
+            if best_match_idx != -1:
+                node_a = valid_nodes[i]
+                node_b = valid_nodes[best_match_idx]
+                
+                # Determine direction: merge less connected into more connected
+                if graph.degree(node_b) > graph.degree(node_a):
+                    source, target = node_a, node_b
+                else:
+                    source, target = node_b, node_a
+                    
+                logger.info(f"[Stage 3] Merging Semantic {source} -> {target} (Score={best_score:.3f})")
+                merge_node_into(graph, source, target)
+                merged_in_this_pass.add(source) # Mark as gone
+                stats['merges_stage_3_semantic'] += 1
+                stats['merged_pairs_details'].append(f"SEMANTIC: {source} -> {target}")
+
+    # --- STAGE 4: Title/Role Cleanup ---
+    title_indicators = ["MR_", "MRS_", "MS_", "MADAM_", "PRESIDENT", "SPEAKER", "MINISTER", "COMMISSIONER"]
+    
+    # Refresh nodes
+    for n in list(graph.nodes()):
+        if graph.nodes[n].get('node_type') == 'ENTITY_CONCEPT':
+            is_title = False
+            for ind in title_indicators:
+                if n.startswith(ind) or n.endswith(f"_{ind}"):
+                    is_title = True
+                    break
+            
+            if is_title:
+                # Ambiguous role/title
+                degree = graph.degree(n)
+                if degree <= 2:
+                    # Low connectivity title -> unlikely to be resolved -> Remove
+                    logger.info(f"[Stage 4] Removing ambiguous title node: {n}")
+                    graph.remove_node(n)
+                    stats['removed_stage_4_titles'] += 1
+                else:
+                    # High connectivity -> Flag as role
+                    graph.nodes[n]['is_role'] = True
+
+    final_count = len([n for n in graph.nodes() if graph.nodes[n].get('node_type') in node_types])
+    stats['final_count'] = final_count
+    
+    logger.info(f"Resolution Complete. {stats['merges_stage_1_acronym']} acronyms, {stats['merges_stage_2_containment']} substrings, {stats['merges_stage_3_semantic']} semantic merges.")
+    
+    return stats

@@ -4,42 +4,47 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-def prune_graph(graph: nx.DiGraph, config: Dict[str, Any]) -> Dict[str, Any]:
+def prune_graph(graph: nx.DiGraph, processing_config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Prune the graph based on degree or other metrics.
-    Simple implementation for now.
+    Prune the graph based on edge confidence and node isolation.
+
+    Args:
+        graph: The graph to prune in-place.
+        processing_config: The 'processing' sub-dict from PipelineSettings
+            (i.e. settings.processing.model_dump()).
     """
-    threshold = config.get('pruning_threshold', 0.0)
-    initial_nodes = graph.number_of_nodes()
-    initial_edges = graph.number_of_edges()
-    
-    # 1. Prune Low-Confidence Edges
+    if not processing_config.get('enable_pruning', True):
+        return {
+            "nodes_removed": 0,
+            "edges_removed": 0,
+            "final_nodes": graph.number_of_nodes(),
+            "final_edges": graph.number_of_edges(),
+        }
+
+    pruning_threshold = processing_config.get('pruning_threshold', 0.0)
+
+    # 1. Prune low-confidence entity_relation edges
     edges_removed = 0
-    min_confidence = config.get('min_edge_confidence', 0.0)
-    
-    if min_confidence > 0:
-        edges_to_remove = []
-        for u, v, data in graph.edges(data=True):
-            # Only prune entity_relation edges, not others (like structural ones)
-            if data.get('graph_type') == 'entity_relation':
-                conf = data.get('confidence', 1.0)
-                if conf < min_confidence:
-                    edges_to_remove.append((u, v))
-        
+    if pruning_threshold > 0:
+        edges_to_remove = [
+            (u, v)
+            for u, v, data in graph.edges(data=True)
+            if data.get('graph_type') == 'entity_relation'
+            and data.get('confidence', 1.0) < pruning_threshold
+        ]
         graph.remove_edges_from(edges_to_remove)
         edges_removed = len(edges_to_remove)
-        logger.info(f"Pruned {edges_removed} edges with confidence < {min_confidence}")
+        logger.info("Pruned %d edges with confidence < %.3f", edges_removed, pruning_threshold)
 
     # 2. Prune isolated nodes if configured
-    nodes_to_remove = []
-    if config.get('prune_isolated_nodes', True):
+    nodes_to_remove: list = []
+    if processing_config.get('prune_isolated_nodes', True):
         nodes_to_remove = [n for n in graph.nodes() if graph.degree(n) == 0]
-        
-    graph.remove_nodes_from(nodes_to_remove)
-    
+        graph.remove_nodes_from(nodes_to_remove)
+
     return {
         "nodes_removed": len(nodes_to_remove),
         "edges_removed": edges_removed,
         "final_nodes": graph.number_of_nodes(),
-        "final_edges": graph.number_of_edges()
+        "final_edges": graph.number_of_edges(),
     }
