@@ -17,7 +17,6 @@ from graphgen.analytics.visualizer import (
     plot_topic_heatmap, 
     generate_interactive_explorer
 )
-from graphgen.analytics.reporting import generate_topic_separation_report
 from graphgen.analytics.diversity import calculate_topic_diversity
 
 
@@ -137,15 +136,6 @@ class GraphAnalyzer:
                     pass
             # diversity = calculate_topic_diversity(top_words_list)
             # results['topic_diversity'] = diversity
-
-        # 3. Separation Report (if not already run by orchestrator, or if we want to re-run)
-        if self.config.get('run_separation_report', False):
-             sep_report = generate_topic_separation_report(
-                 graph, 
-                 os.path.join(self.output_dir, "topic_separation_report.json"),
-                 self.config
-             )
-             results['separation'] = sep_report
 
         # Save summary report
         with open(os.path.join(self.output_dir, "analysis_summary.json"), 'w') as f:

@@ -87,14 +87,26 @@ def plot_topic_heatmap(
 
         sorted_ids = sorted(topic_embeddings.keys())
         matrix = np.vstack([topic_embeddings[tid] for tid in sorted_ids])
-        labels = [truncate_label(topic_labels.get(tid, tid), 20) for tid in sorted_ids]
+        n = len(sorted_ids)
         
         # Calculate similarity
         from sklearn.metrics.pairwise import cosine_similarity
         sim_matrix = cosine_similarity(matrix)
         
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(sim_matrix, xticklabels=labels, yticklabels=labels, cmap="YlOrRd")
+        # Scale figure size with number of topics (min 8, capped at 20)
+        fig_size = min(max(8, n * 0.15), 20)
+        plt.figure(figsize=(fig_size, fig_size * 0.8))
+
+        if n <= 30:
+            labels = [truncate_label(topic_labels.get(tid, tid), 20) for tid in sorted_ids]
+            tick_fontsize = max(4, 8 - n // 10)
+            ax = sns.heatmap(sim_matrix, xticklabels=labels, yticklabels=labels, cmap="YlOrRd")
+            ax.set_xticklabels(ax.get_xticklabels(), fontsize=tick_fontsize, rotation=90)
+            ax.set_yticklabels(ax.get_yticklabels(), fontsize=tick_fontsize, rotation=0)
+        else:
+            # Too many labels to be readable — suppress them entirely
+            ax = sns.heatmap(sim_matrix, xticklabels=False, yticklabels=False, cmap="YlOrRd")
+
         plt.title(title)
         plt.tight_layout()
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -121,61 +133,97 @@ def generate_interactive_explorer(
 
     # Create network
     net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="black")
-    net.force_atlas_2based()
+    # Use barnesHut for better stability with more nodes
+    net.barnes_hut(gravity=-80000, central_gravity=0.3, spring_length=250, spring_strength=0.001, damping=0.09, overlap=0)
     
     # Add nodes and edges
-    # Filter for Entities and Communities only (skip chunks to reduce noise)
-    valid_types = {'ENTITY_CONCEPT', 'COMMUNITY', 'SUBCOMMUNITY'}
+    # Filter for Entities, Topics, and Communities
+    valid_types = {'ENTITY_CONCEPT', 'COMMUNITY', 'SUBCOMMUNITY', 'TOPIC', 'SUBTOPIC'}
     
     display_graph = nx.DiGraph()
     
+    # Generate a color palette supporting many communities
+    # We use a large palette generator
+    def get_color(idx):
+        # A list of distinct colors for communities
+        colors = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+            '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
+            '#c49c94', '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5',
+            '#393b79', '#637939', '#8c6d31', '#843c39', '#7b4173'
+        ]
+        return colors[idx % len(colors)]
+
     for n, data in graph.nodes(data=True):
-        if data.get('node_type') in valid_types:
+        node_type = data.get('node_type', 'Unknown')
+        if node_type in valid_types:
             # Color by community
-            color = "#97c2fc"
+            color = "#97c2fc" # default blue
+            
+            # Distinct colors for Topic/Subtopic vs Entity
+            if node_type in ('TOPIC', 'SUBTOPIC'):
+                # Topics get a distinct shape or slightly different shade? 
+                # For now let's stick to community color but maybe different shape
+                shape = "square" if node_type == 'TOPIC' else "box"
+                size = 30 if node_type == 'TOPIC' else 20
+            else:
+                shape = "dot"
+                size = 15
+
             if communities and n in communities:
-                import matplotlib.colors as mcolors
                 comm_id = communities[n]
-                # Generate color from hash
-                color = list(mcolors.TABLEAU_COLORS.values())[comm_id % 10]
+                color = get_color(comm_id)
                 
             label = data.get('name', str(n))
-            
+            # Wrap label if too long for display
+            display_label = label
+            if len(display_label) > 20: 
+                 # Insert newline roughly in middle or every 20 chars
+                 display_label = display_label[:20] + "..."
+
             # Build comprehensive hover details
             title_parts = [f"<b>{label}</b>"]
-            title_parts.append(f"Type: {data.get('node_type', 'Unknown')}")
+            title_parts.append(f"Type: {node_type}")
             
             # Add description if available
             if 'description' in data and data['description']:
                 desc = data['description']
-                # Show full description on hover
                 title_parts.append(f"<br><b>Description:</b> {desc}")
+                
+            # Add summary if available (for topics)
+            if 'summary' in data and data['summary']:
+                summary = data['summary']
+                title_parts.append(f"<br><b>Summary:</b> {summary}")
             
             # Add chunk IDs if available
             if 'chunk_ids' in data and data['chunk_ids']:
                 chunk_count = len(data['chunk_ids']) if isinstance(data['chunk_ids'], list) else 1
                 title_parts.append(f"<br><b>Chunks:</b> {chunk_count}")
             
-            # Add any other metadata
-            excluded_keys = {'name', 'node_type', 'description', 'chunk_ids', 'pos', 'embedding'}
+            # Add metadata
+            excluded_keys = {'name', 'node_type', 'description', 'summary', 'chunk_ids', 'pos', 'embedding', 'findings_json'}
             for key, value in data.items():
                 if key not in excluded_keys and value is not None:
-                    # Format the value nicely
-                    if isinstance(value, (list, tuple)):
-                        if value:
-                            title_parts.append(f"<br><b>{key.replace('_', ' ').title()}:</b> {len(value)} items")
-                    elif isinstance(value, dict):
-                        if value:
-                            title_parts.append(f"<br><b>{key.replace('_', ' ').title()}:</b> {len(value)} entries")
+                    if isinstance(value, (list, tuple, dict)):
+                        title_parts.append(f"<br><b>{key.replace('_', ' ').title()}:</b> {len(value)} items")
                     elif isinstance(value, (int, float, str, bool)):
                         title_parts.append(f"<br><b>{key.replace('_', ' ').title()}:</b> {value}")
             
             title = "".join(title_parts)
-            net.add_node(n, label=label, title=title, color=color, group=communities.get(n, 0) if communities else 0)
+            
+            net.add_node(
+                n, 
+                label=display_label, 
+                title=title, 
+                color=color, 
+                shape=shape,
+                size=size
+            )
 
     for u, v, data in graph.edges(data=True):
         if u in net.get_nodes() and v in net.get_nodes():
-            # Build edge label from edge data
+            # Build edge label
             edge_label = data.get('relation_type', data.get('type', ''))
             
             # Add score if available
@@ -188,23 +236,17 @@ def generate_interactive_explorer(
             
             # Build edge title (hover text)
             edge_title_parts = []
-            if 'relation_type' in data or 'type' in data:
-                edge_title_parts.append(f"<b>Relation:</b> {data.get('relation_type', data.get('type', 'Unknown'))}")
+            relation = data.get('relation_type', data.get('type', 'Unknown'))
+            edge_title_parts.append(f"<b>Relation:</b> {relation}")
+            
             if 'score' in data:
                 edge_title_parts.append(f"<br><b>Score:</b> {data['score']}")
             if 'weight' in data:
                 edge_title_parts.append(f"<br><b>Weight:</b> {data['weight']}")
             
-            # Add any other edge metadata
-            excluded_edge_keys = {'relation_type', 'type', 'score', 'weight'}
-            for key, value in data.items():
-                if key not in excluded_edge_keys and value is not None:
-                    if isinstance(value, (int, float, str, bool)):
-                        edge_title_parts.append(f"<br><b>{key.replace('_', ' ').title()}:</b> {value}")
-            
             edge_title = "".join(edge_title_parts) if edge_title_parts else None
             
-            net.add_edge(u, v, label=edge_label, title=edge_title)
+            net.add_edge(u, v, label=edge_label, title=edge_title, arrows="to")
 
     # Inject custom search javascript
     # This is a bit hacky but standard for adding search to PyVis
@@ -309,6 +351,320 @@ def plot_node2vec_impact(
         logger.exception("Failed to plot Node2Vec impact.")
 
 
+def plot_node2vec_uplift(
+    baseline_modularity: float,
+    weighted_modularity: float,
+    null_distribution: np.ndarray,
+    output_path: str,
+    p_value: Optional[float] = None,
+    n_permutations: Optional[int] = None,
+    null_95th: Optional[float] = None,
+    null_99th: Optional[float] = None,
+    baseline_distribution: Optional[np.ndarray] = None,
+    weighted_distribution: Optional[np.ndarray] = None,
+    seed_stability_p: Optional[float] = None,
+) -> None:
+    """Produce a two-panel, thesis-quality figure.
+
+    Left panel: slope/dot chart contrasting baseline and Node2Vec-weighted
+    Leiden modularity.  When per-seed modularity distributions are supplied
+    they are overlaid as jittered points with ±1 SD whiskers, showing that
+    the uplift exceeds seed-to-seed variance.
+
+    Right panel: KDE of the permutation-test null distribution, focused on
+    the null region.  The observed statistic (far outside the null) is
+    annotated with an arrow rather than stretched onto the same axis, which
+    avoids the large blank gap that degrades readability.
+    """
+    from graphgen.analytics.plot_style import apply_thesis_style, COLORS
+    from scipy.stats import gaussian_kde
+    import matplotlib.gridspec as gridspec
+    import matplotlib.patches as mpatches
+
+    apply_thesis_style()
+
+    # --- Guard against degenerate inputs (tiny/empty graphs) ------------------
+    null_distribution = np.asarray(null_distribution, dtype=float)
+    if null_distribution.size < 2 or np.ptp(null_distribution) == 0:
+        logger.warning(
+            "plot_node2vec_uplift: null distribution has %d value(s) with zero "
+            "spread; skipping uplift plot.",
+            null_distribution.size,
+        )
+        return
+    if baseline_modularity == 0:
+        logger.warning(
+            "plot_node2vec_uplift: baseline modularity is 0; skipping uplift plot "
+            "(relative lift undefined)."
+        )
+        return
+
+    BASELINE_C = "#7f8c8d"
+    WEIGHTED_C = COLORS["accent"]
+    NULL_C = "#95a5a6"
+    REJECT_C = "#e67e22"
+    OBS_C = COLORS["secondary"]
+
+    delta = weighted_modularity - baseline_modularity
+    delta_pct = 100.0 * delta / baseline_modularity
+
+    fig = plt.figure(figsize=(9, 4.2))
+    gs = gridspec.GridSpec(
+        1, 2, width_ratios=[1, 2.0], wspace=0.38, figure=fig,
+        left=0.09, right=0.96, top=0.88, bottom=0.14,
+    )
+    ax_l = fig.add_subplot(gs[0])
+    ax_r = fig.add_subplot(gs[1])
+
+    # ------------------------------------------------------------------ #
+    # Left panel – slope / dot chart                                       #
+    # ------------------------------------------------------------------ #
+    xs = [0.15, 0.85]
+    ys = [baseline_modularity, weighted_modularity]
+    y_pad = 0.025
+
+    ax_l.plot(xs, ys, color="#bdc3c7", linewidth=1.2, linestyle="--", zorder=1)
+
+    # Overlay per-seed distributions (jittered points + ±1 SD whiskers).
+    all_dist_vals = []
+    for x_pos, dist, col in (
+        (xs[0], baseline_distribution, BASELINE_C),
+        (xs[1], weighted_distribution, WEIGHTED_C),
+    ):
+        if dist is None:
+            continue
+        dist = np.asarray(dist, dtype=float)
+        if dist.size == 0:
+            continue
+        all_dist_vals.append(dist)
+        # deterministic jitter (no RNG — keeps figure reproducible)
+        jitter = (np.linspace(-1, 1, dist.size) * 0.05) if dist.size > 1 else np.array([0.0])
+        ax_l.scatter(
+            np.full(dist.size, x_pos) + jitter, dist,
+            color=col, s=14, alpha=0.35, zorder=2, clip_on=False, edgecolors="none",
+        )
+        if dist.size > 1:
+            sd = float(np.std(dist, ddof=1))
+            mean = float(np.mean(dist))
+            ax_l.errorbar(
+                x_pos, mean, yerr=sd, color=col, elinewidth=1.2,
+                capsize=3, capthick=1.2, zorder=2, alpha=0.7,
+            )
+
+    ax_l.scatter([xs[0]], [ys[0]], color=BASELINE_C, s=72, zorder=3, clip_on=False)
+    ax_l.scatter([xs[1]], [ys[1]], color=WEIGHTED_C, s=72, zorder=3, clip_on=False)
+
+    # value labels above each dot
+    label_offset = (max(ys) - min(ys)) * 0.045
+    ax_l.text(
+        xs[0], ys[0] + label_offset, f"Q = {ys[0]:.4f}",
+        ha="center", va="bottom", fontsize=9, color=BASELINE_C,
+    )
+    ax_l.text(
+        xs[1], ys[1] + label_offset, f"Q = {ys[1]:.4f}",
+        ha="center", va="bottom", fontsize=9, color=WEIGHTED_C, fontweight="bold",
+    )
+
+    # Δ annotation midway between the dots
+    mid_x = sum(xs) / 2
+    mid_y = sum(ys) / 2
+    ax_l.annotate(
+        f"$\\Delta$ = +{delta:.4f}\n(+{delta_pct:.1f} %)",
+        xy=(mid_x, mid_y),
+        ha="center", va="center", fontsize=8.5,
+        color=WEIGHTED_C,
+        bbox=dict(
+            boxstyle="round,pad=0.35", fc="white",
+            ec=WEIGHTED_C, alpha=0.9, linewidth=0.8,
+        ),
+    )
+
+    ax_l.set_xticks(xs)
+    ax_l.set_xticklabels(["Unweighted", "Node2Vec\nweighted"], fontsize=9)
+    ax_l.set_ylabel("Modularity  (Q)", fontsize=10)
+    ax_l.set_xlim(0, 1)
+    lo_vals = [min(ys)] + [float(d.min()) for d in all_dist_vals]
+    hi_vals = [max(ys)] + [float(d.max()) for d in all_dist_vals]
+    ax_l.set_ylim(min(lo_vals) - 0.025, max(hi_vals) + 0.040)
+    title_l = "Leiden Modularity"
+    if seed_stability_p is not None:
+        title_l += f"\n(seed test p = {seed_stability_p:.3g})"
+    ax_l.set_title(title_l, fontsize=11)
+    ax_l.spines["top"].set_visible(False)
+    ax_l.spines["right"].set_visible(False)
+    ax_l.spines["bottom"].set_visible(False)
+    ax_l.xaxis.grid(False)
+    ax_l.yaxis.grid(True, alpha=0.25, linewidth=0.5)
+    ax_l.tick_params(axis="x", length=0)
+
+    # ------------------------------------------------------------------ #
+    # Right panel – null KDE, focused on the null region                  #
+    # ------------------------------------------------------------------ #
+    kde = gaussian_kde(null_distribution, bw_method="scott")
+    null_lo = null_distribution.min() - 0.004
+    null_hi = null_distribution.max() + 0.004
+    x_grid = np.linspace(null_lo, null_hi, 600)
+    density = kde(x_grid)
+
+    ax_r.fill_between(x_grid, density, alpha=0.22, color=NULL_C)
+    ax_r.plot(x_grid, density, color=NULL_C, linewidth=1.4, label="Null distribution")
+
+    # shade rejection tail (right of 95th pct)
+    if null_95th is not None:
+        mask = x_grid >= null_95th
+        ax_r.fill_between(
+            x_grid[mask], density[mask],
+            alpha=0.45, color=REJECT_C,
+            label=f"95th pct = {null_95th:.4f}",
+        )
+        ax_r.axvline(null_95th, color=REJECT_C, linewidth=0.9, linestyle=":")
+
+    # Observed value is far outside the null range; place a labelled box in the
+    # upper-right corner of the panel rather than stretching the x-axis.
+    obs_label_parts = [f"Observed  $Q$ = {weighted_modularity:.4f}"]
+    if p_value is not None:
+        obs_label_parts.append(f"$p$ = {p_value:.4f}  (outside null range)")
+    obs_label = "\n".join(obs_label_parts)
+
+    ax_r.text(
+        0.97, 0.93, obs_label,
+        transform=ax_r.transAxes,
+        ha="right", va="top",
+        fontsize=8.5, color=OBS_C, fontweight="bold",
+        bbox=dict(
+            boxstyle="round,pad=0.35", fc="white",
+            ec=OBS_C, alpha=0.88, linewidth=0.8,
+        ),
+    )
+
+    n_str = f"  ($n$ = {n_permutations:,})" if n_permutations is not None else ""
+    ax_r.set_title(f"Permutation-test null distribution{n_str}", fontsize=11)
+    ax_r.set_xlabel("Modularity  (Q)", fontsize=10)
+    ax_r.set_ylabel("Density", fontsize=10)
+    ax_r.spines["top"].set_visible(False)
+    ax_r.spines["right"].set_visible(False)
+
+    ax_r.legend(
+        handles=[
+            mpatches.Patch(color=NULL_C, alpha=0.55, label="Null distribution"),
+            mpatches.Patch(color=REJECT_C, alpha=0.7, label=f"Rejection region (≥ 95th pct)"),
+        ],
+        fontsize=8.5,
+        frameon=False,
+        loc="upper left",
+    )
+
+    fig.suptitle(
+        "Node2Vec edge weights improve Leiden community modularity",
+        fontsize=12,
+        fontweight="bold",
+    )
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+    logger.info("Node2Vec uplift plot saved to %s", output_path)
+
+
+def plot_similarity_distribution(
+    pairwise_values: np.ndarray,
+    output_path: str,
+    mean: float = 0.0,
+    normality_p_value: Optional[float] = None,
+    title: str = "Topic Similarity Distribution",
+) -> None:
+    """Thesis-quality histogram and KDE of pairwise cosine similarities.
+
+    Produces a single-panel figure showing the empirical distribution of
+    all pairwise cosine similarities between topic (or subtopic) summary
+    embeddings.  The mean is marked with a vertical dashed line and a
+    Shapiro-Wilk normality result is annotated in the stats box.
+
+    Args:
+        pairwise_values: 1-D array of cosine similarity values.
+        output_path: Destination path for the saved PNG.
+        mean: Pre-computed mean (used only in the annotation label).
+        normality_p_value: Shapiro-Wilk p-value; ``None`` if the test was
+                           not run.
+        title: Plot title.
+    """
+    from graphgen.analytics.plot_style import apply_thesis_style, COLORS
+
+    apply_thesis_style()
+
+    arr = np.asarray(pairwise_values, dtype=float)
+    if arr.size == 0:
+        logger.warning("plot_similarity_distribution: empty pairwise_values; skipping.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+
+    PRIMARY = COLORS["primary"]
+    ACCENT = COLORS["accent"]
+    MEAN_C = COLORS["secondary"]
+
+    # Histogram with seaborn KDE overlay
+    sns.histplot(
+        arr,
+        kde=True,
+        ax=ax,
+        color=PRIMARY,
+        alpha=0.35,
+        line_kws={"linewidth": 2.0, "color": ACCENT},
+        stat="density",
+    )
+
+    # Mean vertical line
+    ax.axvline(
+        mean,
+        color=MEAN_C,
+        linewidth=1.6,
+        linestyle="--",
+        label=f"Mean = {mean:.3f}",
+    )
+
+    # Stats annotation box
+    stats_lines = [
+        f"n pairs = {arr.size:,}",
+        f"mean = {mean:.3f}",
+        f"std = {float(np.std(arr)):.3f}",
+    ]
+    if normality_p_value is not None:
+        normality_label = "normal" if normality_p_value > 0.05 else "non-normal"
+        stats_lines.append(f"Shapiro-Wilk p = {normality_p_value:.3f}  ({normality_label})")
+
+    ax.text(
+        0.97,
+        0.97,
+        "\n".join(stats_lines),
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        color=PRIMARY,
+        bbox=dict(
+            boxstyle="round,pad=0.4",
+            fc="white",
+            ec=PRIMARY,
+            alpha=0.85,
+            linewidth=0.8,
+        ),
+    )
+
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel("Cosine similarity", fontsize=11)
+    ax.set_ylabel("Density", fontsize=11)
+    ax.legend(fontsize=9, frameon=False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+    logger.info("Similarity distribution plot saved to %s", output_path)
+
+
 if __name__ == "__main__":
     import argparse
     from graphgen.utils.logging import configure_logging
@@ -320,6 +676,224 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     plot_evolution_metrics(args.csv, args.output)
+
+def plot_scale_free(
+    degree_sequence: list[int],
+    alpha: float,
+    xmin: int,
+    log_log_r_squared: float,
+    output_path: str,
+    ks_p_value: float | None = None,
+    is_scale_free: bool | None = None,
+    n_nodes: int | None = None,
+    ks_distance: float | None = None,
+    distribution_comparison: dict | None = None,
+) -> None:
+    """Two-panel thesis figure for the scale-free degree-distribution validation.
+
+    Left panel: Complementary Cumulative Degree Distribution (CCDF) with a
+    theoretical power-law overlay and the fitted tail region shaded.
+
+    Right panel: Log-log binned PDF with an OLS regression line.
+
+    The number of nodes is shown prominently in the left-panel stats box so
+    readers can immediately calibrate the sample size alongside the fit quality.
+    """
+    from graphgen.analytics.plot_style import apply_thesis_style, COLORS
+
+    apply_thesis_style()
+
+    degrees = np.array([d for d in degree_sequence if d > 0], dtype=np.float64)
+    if degrees.size == 0:
+        logger.warning("plot_scale_free: empty degree sequence, skipping.")
+        return
+
+    n_total = n_nodes if n_nodes is not None else int(degrees.size)
+
+    # ---------------------------------------------------------------------- #
+    # CCDF                                                                     #
+    # ---------------------------------------------------------------------- #
+    sorted_degs = np.sort(np.unique(degrees.astype(int)))
+    n = float(degrees.size)
+    ccdf = np.array([np.sum(degrees >= k) / n for k in sorted_degs])
+
+    # Power-law CCDF: P(X >= k) ~ k^{-(alpha-1)}
+    k_grid = np.linspace(xmin, sorted_degs[-1] * 1.05, 400)
+    norm = float(xmin) ** (alpha - 1.0)
+    ccdf_fit = norm * k_grid ** (-(alpha - 1.0))
+    # Rescale so the fit passes through the empirical CCDF at xmin
+    idx_xmin = np.searchsorted(sorted_degs, xmin)
+    if idx_xmin < len(ccdf) and ccdf_fit[0] > 0:
+        scale = ccdf[idx_xmin] / ccdf_fit[0]
+        ccdf_fit = ccdf_fit * scale
+
+    # ---------------------------------------------------------------------- #
+    # Binned PDF                                                               #
+    # ---------------------------------------------------------------------- #
+    max_deg = int(degrees.max())
+    bins = np.unique(np.round(np.logspace(0, np.log10(max(max_deg, 2)), 20)).astype(int))
+    counts, edges = np.histogram(degrees, bins=bins)
+    widths = np.diff(edges)
+    bin_centres = (edges[:-1] + edges[1:]) / 2.0
+    pdf = counts / (n * widths)
+
+    mask = pdf > 0
+    log_k = np.log10(bin_centres[mask])
+    log_p = np.log10(pdf[mask])
+    slope, intercept = np.polyfit(log_k, log_p, 1)
+    k_fit = np.logspace(log_k.min(), log_k.max(), 200)
+    p_fit = 10 ** (intercept + slope * np.log10(k_fit))
+
+    # ---------------------------------------------------------------------- #
+    # Figure layout                                                            #
+    # ---------------------------------------------------------------------- #
+    fig, (ax_l, ax_r) = plt.subplots(
+        1, 2,
+        figsize=(11, 4.5),
+        gridspec_kw={"wspace": 0.38},
+    )
+    fig.suptitle(
+        "Scale-Free Property \u2014 Entity-Relation Graph Degree Distribution",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    # ------ Left: CCDF ---------------------------------------------------- #
+    ax_l.set_xscale("log")
+    ax_l.set_yscale("log")
+
+    # Shade tail region (k >= xmin)
+    tail_mask = sorted_degs >= xmin
+    if tail_mask.any():
+        ax_l.axvspan(xmin, sorted_degs[-1] * 1.5, alpha=0.07, color=COLORS["accent"], zorder=0)
+
+    ax_l.scatter(sorted_degs, ccdf, s=14, alpha=0.75, color=COLORS["primary"],
+                 label="Empirical CCDF", zorder=3)
+    ax_l.plot(k_grid, ccdf_fit, color=COLORS["accent"], linewidth=2.0,
+              label=f"Power-law fit (\u03b1\u2009=\u2009{alpha:.2f})", zorder=4)
+    ax_l.axvline(xmin, color=COLORS["secondary"], linewidth=1.1, linestyle="--",
+                 label=f"x_min = {xmin}", zorder=5)
+
+    # Stats box
+    sf_label = "YES" if is_scale_free else "NO"
+    if ks_distance is not None:
+        gof_line = f"KS D = {ks_distance:.3f}"
+    elif ks_p_value is not None:
+        gof_line = f"KS p = {ks_p_value:.3f}"
+    else:
+        gof_line = ""
+    n_line = f"N = {n_total:,} nodes"
+    stats_lines = [
+        f"\u03b1 = {alpha:.3f}",
+        f"x_min = {xmin}",
+        gof_line,
+        f"Scale-free: {sf_label}",
+        n_line,
+    ]
+    # Likelihood-ratio-test verdicts vs alternative distributions.
+    if distribution_comparison:
+        _abbr = {"lognormal": "logn", "exponential": "exp", "truncated_power_law": "trunc-PL"}
+        for alt, res in distribution_comparison.items():
+            R = res.get("loglik_ratio_R")
+            p = res.get("p_value")
+            if R is None or p is None:
+                continue
+            verdict = "PL" if res.get("power_law_favored") else _abbr.get(alt, alt)
+            sig = "*" if p < 0.05 else ""
+            stats_lines.append(f"vs {_abbr.get(alt, alt)}: {verdict}{sig} (p={p:.2f})")
+    stats_text = "\n".join(line for line in stats_lines if line)
+    ax_l.text(
+        0.97, 0.97, stats_text,
+        transform=ax_l.transAxes,
+        ha="right", va="top",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#bdc3c7", alpha=0.9),
+    )
+
+    ax_l.set_xlabel("Degree k")
+    ax_l.set_ylabel("P(X \u2265 k)")
+    ax_l.set_title("Complementary Cumulative Degree Distribution")
+    ax_l.legend(fontsize=8.5, frameon=False)
+
+    # ------ Right: log-log PDF -------------------------------------------- #
+    ax_r.set_xscale("log")
+    ax_r.set_yscale("log")
+    ax_r.scatter(bin_centres[mask], pdf[mask], s=14, alpha=0.75, color=COLORS["primary"],
+                 label="Empirical P(k)", zorder=3)
+    ax_r.plot(k_fit, p_fit, color=COLORS["secondary"], linewidth=2.0,
+              label=f"OLS fit (slope\u2009=\u2009{slope:.2f})", zorder=4)
+
+    ax_r.text(
+        0.97, 0.97, f"R\u00b2 = {log_log_r_squared:.3f}",
+        transform=ax_r.transAxes,
+        ha="right", va="top",
+        fontsize=10, fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#bdc3c7", alpha=0.9),
+    )
+
+    ax_r.set_xlabel("Degree k")
+    ax_r.set_ylabel("P(k)")
+    ax_r.set_title("Log-Log Degree Distribution (PDF)")
+    ax_r.legend(fontsize=8.5, frameon=False)
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+    logger.info("Scale-free plot saved to %s", output_path)
+
+
+def plot_ground_truth_alignment(
+    similarity_matrix: List[List[float]],
+    community_labels: List[str],
+    theme_labels: List[str],
+    output_path: str,
+) -> None:
+    """Heatmap of community-vs-EPRS-theme cosine similarity.
+
+    Rows are detected communities, columns are the expert ground-truth
+    themes; each community's best-matching theme is outlined, giving a
+    visual read of coverage and alignment quality.
+    """
+    from graphgen.analytics.plot_style import apply_thesis_style, truncate_label
+    import matplotlib.patches as mpatches
+
+    apply_thesis_style()
+
+    try:
+        sim = np.asarray(similarity_matrix, dtype=float)
+        if sim.size == 0:
+            logger.info("Skipping ground-truth heatmap: empty matrix.")
+            return
+
+        n_comm, n_theme = sim.shape
+        fig_h = min(max(4, n_comm * 0.35), 20)
+        fig_w = min(max(6, n_theme * 1.4), 18)
+        plt.figure(figsize=(fig_w, fig_h))
+
+        row_labels = [truncate_label(l, 28) for l in community_labels]
+        col_labels = [truncate_label(l, 22) for l in theme_labels]
+
+        ax = sns.heatmap(
+            sim, xticklabels=col_labels, yticklabels=row_labels,
+            cmap="YlGnBu", vmin=0.0, vmax=1.0,
+            cbar_kws={"label": "Cosine similarity"}, linewidths=0.4, linecolor="white",
+        )
+        # Outline each row's best-matching theme.
+        best = sim.argmax(axis=1)
+        for r, c in enumerate(best):
+            ax.add_patch(mpatches.Rectangle((c, r), 1, 1, fill=False, edgecolor="#e74c3c", lw=1.6))
+
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=35, ha="right", fontsize=8)
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=7, rotation=0)
+        plt.title("Detected Communities vs. EPRS Ground-Truth Themes", fontsize=12, fontweight="bold")
+        plt.tight_layout()
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        plt.savefig(output_path, dpi=300)
+        plt.close()
+        logger.info("Ground-truth alignment heatmap saved to %s", output_path)
+    except Exception:
+        logger.exception("Failed to plot ground-truth alignment heatmap.")
+
 
 def plot_community_centrality(
     centrality_data: Dict[str, Dict[str, List[Dict[str, Any]]]],
@@ -377,6 +951,51 @@ def plot_community_centrality(
 
     except Exception:
         logger.exception("Failed to plot community centrality.")
+
+
+def plot_community_sizes(
+    community_sizes: Dict[str, int],
+    subcommunity_sizes: Dict[str, int],
+    output_path: str,
+) -> None:
+    """Plot histogram of community and subcommunity entity counts.
+
+    Args:
+        community_sizes: Mapping of community node id to entity count.
+        subcommunity_sizes: Mapping of subcommunity node id to entity count.
+        output_path: Destination PNG path.
+    """
+    from graphgen.analytics.plot_style import apply_thesis_style
+
+    apply_thesis_style()
+
+    comm_counts = [v for v in community_sizes.values() if v > 0]
+    sub_counts = [v for v in subcommunity_sizes.values() if v > 0]
+
+    has_sub = bool(sub_counts)
+    n_cols = 2 if has_sub else 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 4))
+    if n_cols == 1:
+        axes = [axes]
+
+    for ax, counts, label in zip(
+        axes,
+        [comm_counts, sub_counts] if has_sub else [comm_counts],
+        ["Communities", "Subcommunities"] if has_sub else ["Communities"],
+    ):
+        if not counts:
+            ax.set_visible(False)
+            continue
+        ax.hist(counts, bins=max(5, len(counts) // 3), color="#4878CF", edgecolor="white", linewidth=0.5)
+        ax.set_xlabel("Entity count", fontsize=10)
+        ax.set_ylabel("Frequency", fontsize=10)
+        ax.set_title(f"{label} — Size Distribution", fontsize=11, fontweight="bold")
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Community size distribution plot saved to %s", output_path)
 
 
 def plot_global_centrality(
